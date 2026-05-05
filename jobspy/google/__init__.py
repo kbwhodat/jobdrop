@@ -1,53 +1,43 @@
-"""Google Jobs scraper — Playwright + CDP-first.
+"""Google Jobs scraper — headless via selenium-driverless.
 
-## Why this is built the way it is
+## Why selenium-driverless
 
-Google in 2026 hardened anti-bot in a way that defeats every standard
-browser-automation framework from a fresh request:
+Google's 2026 anti-bot CAPTCHAs every fresh browser launch from
+playwright (chromium/chrome/firefox), undetected-chromedriver, nodriver,
+patchright — every standard automation framework. Headed and headless
+both fail. The only browsers Google trusts are long-running instances
+that have accumulated session history.
 
-  - Vanilla Playwright (headless or headed)        → /sorry/ CAPTCHA
-  - Real Chrome via channel="chrome"               → /sorry/ CAPTCHA
-  - undetected-chromedriver / nodriver / patchright → /sorry/ CAPTCHA
-  - All of the above + MCP's exact launch flags    → /sorry/ CAPTCHA
+`selenium-driverless` works around this by talking to Chrome over CDP
+without any of the Selenium/WebDriver fingerprint surface. Cold-start,
+headless, fresh profile — verified against three different Google
+queries returning real jobs without /sorry/ redirects.
 
-The single thing that *does* work is connecting (via CDP) to a Chrome
-instance that has already accumulated session trust — i.e. a browser
-that's been used a few times to view normal Google pages, has cookies,
-and has run for more than a few seconds. That's why the long-running
-@playwright/mcp browser works while a fresh launch fails — it's profile
-warmth, not flags or stealth.
+## End-to-end behavior
 
-So this scraper:
-  1. **CDP-connect** to a running Chrome instance. Two discovery paths:
-     a. `CHROME_CDP_URL` env var — point at any Chrome started with
-        `--remote-debugging-port=N` (the standard pattern).
-     b. Auto-discover a running @playwright/mcp Chromium by scanning for
-        a `--remote-debugging-port=` arg in the process list.
-  2. If neither is available, log a clear "no warm browser found"
-     message and return zero jobs. We don't try to launch our own —
-     it'll just CAPTCHA.
+  - Launches Chrome headless (`--headless=new`)
+  - Navigates Google Jobs SERP (`udm=8`)
+  - Extracts cards using DOM walk (find aria "Add ... to saves list"
+    button, walk up to the ancestor containing the metadata block)
+  - Returns a JobResponse with title/company/location/date_posted/url
 
-The original HTTP scraper is preserved at `__init__.py.http-backup` for
-reference / future use if Google ever drops the JS gate.
+## Date capture
 
-## Running a warm browser
+Google only decorates job cards with "Posted X ago" tags when the
+query includes a temporal phrase like "in the last week" / "in the
+last month". The scraper appends one based on `hours_old` and falls
+back to "in the last month" when no `hours_old` is set, so dates
+populate by default.
 
-The cheapest path is Chrome itself:
-
-    /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\
-        --remote-debugging-port=9222 --user-data-dir=$HOME/.cache/jobspy-chrome
-
-Then export `CHROME_CDP_URL=http://127.0.0.1:9222` and run.
+The original HTTP scraper is preserved at `__init__.py.http-backup`.
 """
 from __future__ import annotations
 
-import os
+import asyncio
 import re
-import subprocess
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote_plus
-from urllib.request import urlopen
 
 from jobspy.google.util import log
 from jobspy.model import (
@@ -63,8 +53,8 @@ from jobspy.model import (
 
 
 _GOOGLE_JOBS_URL = "https://www.google.com/search?q={query}&udm=8"
-_NAV_TIMEOUT_MS = 30_000
-_RENDER_TIMEOUT_MS = 12_000
+_NAV_TIMEOUT_S = 30
+_RENDER_SLEEP_S = 4.0
 
 
 class Google(Scraper):
@@ -77,9 +67,7 @@ class Google(Scraper):
         super().__init__(Site.GOOGLE, proxies=proxies, ca_cert=ca_cert)
         self.scraper_input: ScraperInput | None = None
         self.country: Country | None = None
-        # user_agent retained for API compat; ignored when CDP-connecting
-        # since we attach to a context that already has its own UA.
-        self.user_agent = user_agent
+        self.user_agent = user_agent  # accepted for API compat; unused
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
@@ -88,68 +76,24 @@ class Google(Scraper):
         log.info(f"google: query={query!r}")
 
         try:
-            from playwright.sync_api import TimeoutError as PlaywrightTimeout
-            from playwright.sync_api import sync_playwright
+            from selenium_driverless import webdriver  # noqa: F401
         except ImportError:
             log.error(
-                "google: playwright is required. "
-                "Install with: pip install playwright && playwright install chromium"
+                "google: selenium-driverless is required. "
+                "Install with: pip install selenium-driverless"
             )
             return JobResponse(jobs=[])
 
-        cdp_url = _discover_cdp_url()
-        if not cdp_url:
-            log.error(
-                "google: no warm Chrome found. Google's anti-bot blocks fresh "
-                "browser launches. Start a long-running Chrome with:\n"
-                "  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome "
-                "--remote-debugging-port=9222 "
-                "--user-data-dir=$HOME/.cache/jobspy-chrome\n"
-                "Then export CHROME_CDP_URL=http://127.0.0.1:9222 and retry."
-            )
-            return JobResponse(jobs=[])
-
-        log.info(f"google: connecting to CDP at {cdp_url}")
-        raw_cards: list[dict[str, Any]] = []
-
-        with sync_playwright() as pw:
-            try:
-                browser = pw.chromium.connect_over_cdp(cdp_url)
-            except Exception as e:
-                log.error(f"google: failed to connect to CDP {cdp_url}: {e}")
-                return JobResponse(jobs=[])
-
-            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = ctx.new_page()
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
-                if "/sorry/" in page.url:
-                    log.error(
-                        f"google: even the warm browser hit /sorry/ CAPTCHA at "
-                        f"{page.url[:120]}. The session may need more warmth — "
-                        f"open the browser, search Google a few times, accept "
-                        f"any consent dialogs, then retry."
-                    )
-                    return JobResponse(jobs=[])
-                try:
-                    page.wait_for_selector(
-                        '[role="button"][aria-label*="to saves list"]',
-                        timeout=_RENDER_TIMEOUT_MS,
-                    )
-                except PlaywrightTimeout:
-                    log.warning(
-                        "google: no job-card buttons rendered within timeout — "
-                        "Google may be showing 'no results' for this query"
-                    )
-                    return JobResponse(jobs=[])
-
-                # Light scroll to nudge lazy-loaded cards.
-                page.mouse.wheel(0, 4000)
-                page.wait_for_timeout(800)
-
-                raw_cards = page.evaluate(_EXTRACT_JS)
-            finally:
-                page.close()
+        try:
+            raw_cards = asyncio.run(self._scrape_async(url))
+        except RuntimeError as e:
+            # Caller is already inside an event loop. Fall back to a
+            # nested-loop runner via a fresh thread.
+            if "asyncio.run" in str(e) or "running event loop" in str(e):
+                log.info("google: detected running loop; running on dedicated thread")
+                raw_cards = _run_on_thread(self._scrape_async(url))
+            else:
+                raise
 
         log.info(f"google: extracted {len(raw_cards)} raw cards")
 
@@ -171,13 +115,39 @@ class Google(Scraper):
         log.info(f"google: returning {len(jobs)} jobs")
         return JobResponse(jobs=jobs)
 
+    async def _scrape_async(self, url: str) -> list[dict[str, Any]]:
+        from selenium_driverless import webdriver
+
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--window-size=1280,900")
+
+        async with webdriver.Chrome(options=options) as driver:
+            await driver.get(url, wait_load=True, timeout=_NAV_TIMEOUT_S)
+            await asyncio.sleep(_RENDER_SLEEP_S)
+
+            current_url = await driver.current_url
+            if "/sorry/" in current_url:
+                log.error(
+                    f"google: hit /sorry/ CAPTCHA at {current_url[:120]}. "
+                    f"selenium-driverless usually bypasses this — possible IP "
+                    f"reputation issue or anti-bot upgrade."
+                )
+                return []
+
+            cards = await driver.execute_script(_EXTRACT_JS, serialization="json")
+            return cards or []
+
     def _build_query(self, si: ScraperInput) -> str:
         if si.google_search_term:
             return si.google_search_term
+
         parts: list[str] = []
         if si.search_term:
             parts.append(si.search_term)
         parts.append("jobs")
+
         job_type_mapping = {
             JobType.FULL_TIME: "Full time",
             JobType.PART_TIME: "Part time",
@@ -186,8 +156,14 @@ class Google(Scraper):
         }
         if si.job_type in job_type_mapping:
             parts.append(job_type_mapping[si.job_type])
+
         if si.location:
             parts.append(f"near {si.location}")
+
+        # Always include a temporal phrase. Google only decorates cards
+        # with "Posted X ago" lines when one is present in the query.
+        # Default: last month — wide enough not to filter usefully but
+        # enough to make dates appear on cards.
         hours_old = getattr(si, "hours_old", None)
         if hours_old:
             if hours_old <= 24:
@@ -198,151 +174,107 @@ class Google(Scraper):
                 parts.append("in the last week")
             else:
                 parts.append("in the last month")
+        else:
+            parts.append("in the last month")
+
         if si.is_remote:
             parts.append("remote")
+
         return " ".join(parts)
 
 
 # -----------------------------------------------------------------------------
-# CDP discovery — find a running Chrome we can attach to
+# Async helpers
 # -----------------------------------------------------------------------------
 
 
-def _discover_cdp_url() -> str | None:
-    """Return a CDP base URL we can `connect_over_cdp` to, or None.
+def _run_on_thread(coro):
+    """Run an awaitable to completion from sync code that's already inside
+    a running event loop. Spins up a dedicated thread + new loop for the
+    one call. Returns the result; re-raises exceptions from the coro."""
+    import threading
 
-    Checks in order:
-      1. $CHROME_CDP_URL  (e.g. "http://127.0.0.1:9222")
-      2. $JOBSPY_CHROME_CDP_PORT (just the port, host = 127.0.0.1)
-      3. Common port 9222 (the standard Chrome remote-debug port)
-      4. Auto-detect: any running playwright-mcp Chromium with
-         `--remote-debugging-port=<N>` on the command line.
-    """
-    explicit = os.environ.get("CHROME_CDP_URL", "").strip()
-    if explicit and _cdp_alive(explicit):
-        return explicit
+    result_box: dict[str, Any] = {}
 
-    port_env = os.environ.get("JOBSPY_CHROME_CDP_PORT", "").strip()
-    if port_env.isdigit():
-        candidate = f"http://127.0.0.1:{port_env}"
-        if _cdp_alive(candidate):
-            return candidate
+    def runner():
+        try:
+            result_box["ok"] = asyncio.run(coro)
+        except BaseException as e:  # noqa: BLE001
+            result_box["err"] = e
 
-    standard = "http://127.0.0.1:9222"
-    if _cdp_alive(standard):
-        return standard
-
-    autodetected = _autodetect_running_pw_mcp_port()
-    if autodetected:
-        candidate = f"http://127.0.0.1:{autodetected}"
-        if _cdp_alive(candidate):
-            return candidate
-    return None
-
-
-def _cdp_alive(base_url: str, timeout: float = 1.5) -> bool:
-    try:
-        with urlopen(f"{base_url.rstrip('/')}/json/version", timeout=timeout) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-
-def _autodetect_running_pw_mcp_port() -> int | None:
-    """Scan running processes for a Chromium with --remote-debugging-port=N.
-
-    macOS-only path right now (uses `ps -ax`). On Linux this still works.
-    Windows would need a different approach (tasklist/wmic) — left as TODO
-    if needed.
-    """
-    try:
-        out = subprocess.check_output(
-            ["ps", "-axo", "command="], text=True, stderr=subprocess.DEVNULL, timeout=2
-        )
-    except Exception:
-        return None
-    for line in out.splitlines():
-        if "chromium" not in line.lower() and "chrome" not in line.lower():
-            continue
-        if "playwright" not in line.lower() and "mcp" not in line.lower() and "ms-playwright" not in line.lower():
-            continue
-        m = re.search(r"--remote-debugging-port=(\d+)", line)
-        if m:
-            return int(m.group(1))
-    return None
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
+    if "err" in result_box:
+        raise result_box["err"]
+    return result_box.get("ok")
 
 
 # -----------------------------------------------------------------------------
 # Page-side extraction
 # -----------------------------------------------------------------------------
 
-# Each job is a card whose only stable anchor is a "[role="button"]" with
-# aria-label "Add <title> to saves list". The card's *visible* content
-# lives several levels up the parent chain — Google nests it ~8 deep.
-# At parent-depth 2 you get just title/company/location (3 lines). Walk
-# further up and you pick up "Posted X ago", "Full-time", "Salary $...",
-# etc. Walk too far and multiple cards merge into one container.
+# Each job card's only stable anchor is a `[role="button"]` with aria-label
+# "Add <title> to saves list". Its visible content lives several DOM levels
+# up — heading-only at depth ~2, full card (heading + "Posted X ago" +
+# employment type) at depth ~8. Walk too far and sibling cards merge.
 #
-# We pick the LARGEST ancestor that:
-#   - contains the title from aria-label exactly once (still one card)
-#   - AND mentions an age phrase (X days/hours ago) OR an employment-type
-#     keyword (Full-time/Part-time/Contract/Internship) — i.e. has the
-#     metadata block, not just the heading block
-# If no such ancestor is found within 14 levels, fall back to the first
-# multi-line container (heading-only — works but date_posted will be None).
+# Heuristic: walk up to the FIRST ancestor that
+#   - has multi-line text content
+#   - matches an age phrase or employment-type keyword (the metadata block)
+#   - still contains the card's title exactly once (single-card boundary)
+# Fall back to the first multi-line ancestor (heading-only — date_posted
+# will be None) if no metadata-bearing ancestor exists within 14 levels.
 _EXTRACT_JS = r"""
-() => {
-  const buttons = document.querySelectorAll('[role="button"]');
-  const cards = [];
-  const seen = new Set();
-  const META_RE = /(\d+\s*(?:day|hour|week|month|minute)s?\s*ago)|(Full-time|Part-time|Contractor|Contract|Internship|Temporary)/i;
+const buttons = document.querySelectorAll('[role="button"]');
+const cards = [];
+const seen = new Set();
+const META_RE = /(\d+\s*(?:day|hour|week|month|minute)s?\s*ago)|(Full-time|Part-time|Contractor|Contract|Internship|Temporary)/i;
 
-  for (const btn of buttons) {
-    const aria = btn.getAttribute('aria-label') || '';
-    const m = aria.match(/^Add (.+) to saves list$/);
-    if (!m) continue;
-    const title = m[1];
-    const titleEsc = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const titleRe = new RegExp(titleEsc.slice(0, Math.min(40, titleEsc.length)), 'g');
+for (const btn of buttons) {
+  const aria = btn.getAttribute('aria-label') || '';
+  const m = aria.match(/^Add (.+) to saves list$/);
+  if (!m) continue;
+  const title = m[1];
+  // Escape regex metacharacters in the title. Don't slice — slicing the
+  // escaped string risks cutting mid-`\x` and leaving a dangling backslash,
+  // which produces "Invalid regular expression" at runtime.
+  const titleEsc = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const titleRe = new RegExp(titleEsc, 'g');
 
-    let el = btn.parentElement;
-    let metaContainer = null;       // FIRST ancestor with metadata block — one card
-    let fallbackContainer = null;   // first multi-line ancestor (heading only, no date)
+  let el = btn.parentElement;
+  let metaContainer = null;
+  let fallbackContainer = null;
 
-    for (let depth = 0; depth < 14 && el; depth++) {
-      const txt = (el.innerText || '').trim();
-      if (txt.length > 30 && txt.includes('\n')) {
-        if (!fallbackContainer) fallbackContainer = el;
-        // Stop at the first ancestor that contains a date OR employment-type tag
-        // AND still has the title only once (i.e. hasn't merged with siblings yet).
-        // Once we walk past this, sibling cards will glue on and we lose the
-        // single-card boundary.
-        if (META_RE.test(txt)) {
-          const titleHits = (txt.match(titleRe) || []).length;
-          if (titleHits === 1) {
-            metaContainer = el;
-            break;
-          }
+  for (let depth = 0; depth < 14 && el; depth++) {
+    const txt = (el.innerText || '').trim();
+    if (txt.length > 30 && txt.includes('\n')) {
+      if (!fallbackContainer) fallbackContainer = el;
+      if (META_RE.test(txt)) {
+        const titleHits = (txt.match(titleRe) || []).length;
+        if (titleHits === 1) {
+          metaContainer = el;
+          break;
         }
       }
-      el = el.parentElement;
     }
-
-    const container = metaContainer || fallbackContainer;
-    if (!container) continue;
-    if (seen.has(container)) continue;
-    seen.add(container);
-
-    const lines = (container.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
-    let href = null;
-    for (const a of container.querySelectorAll('a[href]')) {
-      const h = a.href;
-      if (h && !h.endsWith('#') && !h.includes('#/')) { href = h; break; }
-    }
-    cards.push({ title_from_aria: title, lines: lines, href: href });
+    el = el.parentElement;
   }
-  return cards;
+
+  const container = metaContainer || fallbackContainer;
+  if (!container) continue;
+  if (seen.has(container)) continue;
+  seen.add(container);
+
+  const lines = (container.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+  let href = null;
+  for (const a of container.querySelectorAll('a[href]')) {
+    const h = a.href;
+    if (h && !h.endsWith('#') && !h.includes('#/')) { href = h; break; }
+  }
+  cards.push({ title_from_aria: title, lines: lines, href: href });
 }
+return cards;
 """
 
 
@@ -361,12 +293,6 @@ def _build_job_post(card: dict[str, Any]) -> JobPost | None:
     if not lines:
         return None
 
-    # Layout in practice (Google Jobs, May 2026):
-    #   [0] title
-    #   [1] company
-    #   [2] location, often with " • via <syndicator>" suffix
-    #   [3...] tags: "Posted X days ago", "Salary $...", "Employment Type ...",
-    #          "Qualification ...", optional benefit chips
     title = lines[0].strip() if len(lines) > 0 else None
     if not title:
         title = title_from_aria
