@@ -278,46 +278,68 @@ def _autodetect_running_pw_mcp_port() -> int | None:
 
 # Each job is a card whose only stable anchor is a "[role="button"]" with
 # aria-label "Add <title> to saves list". The card's *visible* content
-# lives at parent-depth 2 above that button — a small <div> containing
-# title / company / location-with-syndicator / posted-age / salary etc.
-# We walk up until we find a container with multi-line innerText, then
-# capture: aria, lines (newline-split), and any anchor href the card carries.
+# lives several levels up the parent chain — Google nests it ~8 deep.
+# At parent-depth 2 you get just title/company/location (3 lines). Walk
+# further up and you pick up "Posted X ago", "Full-time", "Salary $...",
+# etc. Walk too far and multiple cards merge into one container.
+#
+# We pick the LARGEST ancestor that:
+#   - contains the title from aria-label exactly once (still one card)
+#   - AND mentions an age phrase (X days/hours ago) OR an employment-type
+#     keyword (Full-time/Part-time/Contract/Internship) — i.e. has the
+#     metadata block, not just the heading block
+# If no such ancestor is found within 14 levels, fall back to the first
+# multi-line container (heading-only — works but date_posted will be None).
 _EXTRACT_JS = r"""
 () => {
   const buttons = document.querySelectorAll('[role="button"]');
   const cards = [];
   const seen = new Set();
+  const META_RE = /(\d+\s*(?:day|hour|week|month|minute)s?\s*ago)|(Full-time|Part-time|Contractor|Contract|Internship|Temporary)/i;
+
   for (const btn of buttons) {
     const aria = btn.getAttribute('aria-label') || '';
     const m = aria.match(/^Add (.+) to saves list$/);
     if (!m) continue;
+    const title = m[1];
+    const titleEsc = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const titleRe = new RegExp(titleEsc.slice(0, Math.min(40, titleEsc.length)), 'g');
 
-    // Walk up to find a container with multi-line text content.
     let el = btn.parentElement;
-    let container = null;
-    for (let depth = 0; depth < 12 && el; depth++) {
+    let metaContainer = null;       // FIRST ancestor with metadata block — one card
+    let fallbackContainer = null;   // first multi-line ancestor (heading only, no date)
+
+    for (let depth = 0; depth < 14 && el; depth++) {
       const txt = (el.innerText || '').trim();
       if (txt.length > 30 && txt.includes('\n')) {
-        container = el;
-        break;
+        if (!fallbackContainer) fallbackContainer = el;
+        // Stop at the first ancestor that contains a date OR employment-type tag
+        // AND still has the title only once (i.e. hasn't merged with siblings yet).
+        // Once we walk past this, sibling cards will glue on and we lose the
+        // single-card boundary.
+        if (META_RE.test(txt)) {
+          const titleHits = (txt.match(titleRe) || []).length;
+          if (titleHits === 1) {
+            metaContainer = el;
+            break;
+          }
+        }
       }
       el = el.parentElement;
     }
+
+    const container = metaContainer || fallbackContainer;
     if (!container) continue;
     if (seen.has(container)) continue;
     seen.add(container);
 
     const lines = (container.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
-    // Any anchor with a non-fragment href becomes the candidate apply URL.
     let href = null;
     for (const a of container.querySelectorAll('a[href]')) {
       const h = a.href;
-      if (h && !h.endsWith('#') && !h.includes('#/')) {
-        href = h;
-        break;
-      }
+      if (h && !h.endsWith('#') && !h.includes('#/')) { href = h; break; }
     }
-    cards.push({ title_from_aria: m[1], lines: lines, href: href });
+    cards.push({ title_from_aria: title, lines: lines, href: href });
   }
   return cards;
 }
