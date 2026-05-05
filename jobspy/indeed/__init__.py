@@ -94,13 +94,24 @@ class Indeed(Scraper):
             if self.scraper_input.search_term
             else ""
         )
+        # Build location clause. As of mid-2026 Indeed's GraphQL schema
+        # promoted JobSearchLocationInput.radius from optional to Int! —
+        # `None` rendered into the query produces "Int cannot represent
+        # value: None"; omitting radius produces "required type Int! was
+        # not provided". Default to 25 miles (Indeed's UI default) when
+        # the caller didn't specify a distance.
+        if self.scraper_input.location:
+            radius = self.scraper_input.distance if self.scraper_input.distance is not None else 25
+            location_clause = (
+                f'location: {{where: "{self.scraper_input.location}", '
+                f"radius: {radius}, radiusUnit: MILES}}"
+            )
+        else:
+            location_clause = ""
+
         query = job_search_query.format(
             what=(f'what: "{search_term}"' if search_term else ""),
-            location=(
-                f'location: {{where: "{self.scraper_input.location}", radius: {self.scraper_input.distance}, radiusUnit: MILES}}'
-                if self.scraper_input.location
-                else ""
-            ),
+            location=location_clause,
             dateOnIndeed=self.scraper_input.hours_old,
             cursor=f'cursor: "{cursor}"' if cursor else "",
             filters=filters,
