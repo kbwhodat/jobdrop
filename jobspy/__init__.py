@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Apply compiled defaults BEFORE any scraper module runs its module-level
+# os.environ reads. User-set env vars are preserved (setdefault semantics).
+from jobspy import _defaults  # noqa: F401
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
 
