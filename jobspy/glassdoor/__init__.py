@@ -6,6 +6,7 @@ import requests
 from typing import Tuple
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote_plus
 
 from jobspy.glassdoor.constant import fallback_token, query_template, headers
 from jobspy.glassdoor.util import (
@@ -120,8 +121,21 @@ class Glassdoor(Scraper):
                 exc_msg = f"bad response status code: {response.status_code}"
                 raise GlassdoorException(exc_msg)
             res_json = response.json()[0]
+            # GraphQL allows partial errors — Glassdoor regularly returns
+            # errors on non-essential fields (e.g. jobsPageSeoData failing
+            # with a downstream DNS error) while still populating the real
+            # job list. Only treat as fatal if jobListings.jobListings is
+            # actually missing or empty.
+            jl = (res_json.get("data") or {}).get("jobListings") or {}
+            jobs_payload = jl.get("jobListings")
+            if jobs_payload is None:
+                errors = res_json.get("errors") or []
+                err_summary = "; ".join(e.get("message", "?") for e in errors[:3]) or "no jobListings in response"
+                raise ValueError(f"Glassdoor API error: {err_summary}")
             if "errors" in res_json:
-                raise ValueError("Error encountered in API response")
+                # Log partial errors but proceed with whatever data we got.
+                err_paths = [".".join(map(str, e.get("path") or [])) or "?" for e in res_json["errors"][:3]]
+                log.info(f"Glassdoor: partial errors on paths {err_paths} (continuing with {len(jobs_payload)} jobs)")
         except (
             requests.exceptions.ReadTimeout,
             GlassdoorException,
@@ -258,7 +272,14 @@ class Glassdoor(Scraper):
     def _get_location(self, location: str, is_remote: bool) -> (int, str):
         if not location or is_remote:
             return "11047", "STATE"  # remote options
-        url = f"{self.base_url}/findPopularLocationAjax.htm?maxLocationsToReturn=10&term={location}"
+        # URL-encode the location query. Without this, locations with spaces
+        # or commas (e.g. "Atlanta, GA") produce 400 Bad Request from
+        # findPopularLocationAjax.htm — that 400 was the cause of the
+        # "Glassdoor: location not parsed" error in production.
+        url = (
+            f"{self.base_url}/findPopularLocationAjax.htm"
+            f"?maxLocationsToReturn=10&term={quote_plus(location)}"
+        )
         res = self.session.get(url)
         if res.status_code != 200:
             if res.status_code == 429:
