@@ -444,9 +444,6 @@ name: Test
 
 on:
   push:
-    branches: [main, "setup/**", "fix/**", "feat/**"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -792,7 +789,9 @@ git commit -m "docs(readme): link fork roadmap, CONTRIBUTING, authoring guide"
 
 ---
 
-## Task 10: Final push + CI green-check
+## Task 10: Final push + CI green-check + merge to main
+
+This is a solo fork — no PR ceremony. We push the branch, verify CI green, then fast-forward `main`.
 
 - [ ] **Step 1: Push all commits**
 
@@ -802,37 +801,33 @@ Expected: all 9 commits pushed.
 - [ ] **Step 2: Watch CI**
 
 Run: `gh run watch`
-Expected: lint job ✓, test jobs (3.10, 3.11, 3.12) all ✓.
+Expected: lint job ✓, test jobs (3.10, 3.11, 3.12) all ✓. If anything red, fix and re-push until green before merging.
 
-- [ ] **Step 3: Open a draft PR for visibility (optional)**
-
-Run:
-```bash
-gh pr create --draft \
-  --title "Phase 0: Foundation — dev env, tests, CI, docs" \
-  --body "Implements docs/superpowers/plans/2026-05-05-phase-0-foundation.md.
-
-Foundation for all Phase 1+ scraper work:
-- Poetry dev deps: pytest, pytest-recording, ruff, python-dotenv
-- pytest config + smoke tests + first VCR-recorded scraper test (Indeed)
-- ruff lint/format config
-- .env.example with API key slots for Phase 2
-- GitHub Actions CI (lint + pytest matrix 3.10/3.11/3.12)
-- CONTRIBUTING.md and docs/AUTHORING_SCRAPERS.md
-
-Closes Phase 0 of the [fork roadmap](docs/superpowers/plans/2026-05-05-roadmap.md)."
-```
-
-- [ ] **Step 4: Mark Phase 0 done in the roadmap**
+- [ ] **Step 3: Mark Phase 0 done in the roadmap**
 
 Edit `docs/superpowers/plans/2026-05-05-roadmap.md`: in the "Phases" section, change `### Phase 0 — Foundation` to `### Phase 0 — Foundation ✅` and add a "Completed: 2026-05-XX" line below the plan link.
 
-- [ ] **Step 5: Commit and push the roadmap update**
+- [ ] **Step 4: Commit and push the roadmap update**
 
 ```bash
 git add docs/superpowers/plans/2026-05-05-roadmap.md
 git commit -m "docs(roadmap): mark Phase 0 complete"
 git push origin setup/foundation-plan
+```
+
+- [ ] **Step 5: Fast-forward `main` to the work branch**
+
+```bash
+git checkout main
+git merge --ff-only setup/foundation-plan
+git push origin main
+```
+
+- [ ] **Step 6: Delete the work branch (local + remote)**
+
+```bash
+git branch -d setup/foundation-plan
+git push origin --delete setup/foundation-plan
 ```
 
 ---
