@@ -292,7 +292,13 @@ class Site(Enum):
     GOOGLE = "google"
     BAYT = "bayt"
     NAUKRI = "naukri"
-    BDJOBS = "bdjobs"  # Add this line
+    BDJOBS = "bdjobs"
+    # API-based sources added in the kbwhodat fork
+    USAJOBS = "usajobs"
+    ADZUNA = "adzuna"
+    JOOBLE = "jooble"
+    FINDWORK = "findwork"
+    THE_MUSE = "the_muse"
 
 
 class SalarySource(Enum):
