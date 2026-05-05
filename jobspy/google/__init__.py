@@ -284,6 +284,27 @@ return cards;
 
 _AGE_RE = re.compile(r"(\d+)\s*(day|hour|week|month|minute)s?\s*ago", re.I)
 
+# Google's card uses hyphenated forms ("Full-time", "Part-time") that don't
+# match the upstream JobType.FULL_TIME alias list (which expects "fulltime").
+# Explicit mapping from card text → JobType enum.
+_JOB_TYPE_TEXT_MAP = {
+    "full-time": JobType.FULL_TIME,
+    "fulltime": JobType.FULL_TIME,
+    "part-time": JobType.PART_TIME,
+    "parttime": JobType.PART_TIME,
+    "contract": JobType.CONTRACT,
+    "contractor": JobType.CONTRACT,
+    "internship": JobType.INTERNSHIP,
+    "intern": JobType.INTERNSHIP,
+    "temporary": JobType.TEMPORARY,
+    "temp": JobType.TEMPORARY,
+    "per diem": JobType.PER_DIEM,
+}
+_JOB_TYPE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _JOB_TYPE_TEXT_MAP.keys()) + r")\b",
+    re.I,
+)
+
 
 def _build_job_post(card: dict[str, Any]) -> JobPost | None:
     title_from_aria: str = (card.get("title_from_aria") or "").strip()
@@ -334,6 +355,15 @@ def _build_job_post(card: dict[str, Any]) -> JobPost | None:
             date_posted = (now - delta).date()
             break
 
+    job_types: list[JobType] = []
+    seen_types: set[JobType] = set()
+    for ln in lines:
+        for m in _JOB_TYPE_RE.finditer(ln):
+            t = _JOB_TYPE_TEXT_MAP[m.group(1).lower()]
+            if t not in seen_types:
+                seen_types.add(t)
+                job_types.append(t)
+
     is_remote = (
         "remote" in (raw_location or "").lower()
         or "remote" in title.lower()
@@ -356,5 +386,6 @@ def _build_job_post(card: dict[str, Any]) -> JobPost | None:
         location=location_obj,
         date_posted=date_posted,
         is_remote=is_remote,
+        job_type=job_types or None,
         description=None,
     )
