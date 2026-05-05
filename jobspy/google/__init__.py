@@ -41,6 +41,8 @@ from urllib.parse import quote_plus
 
 from jobspy.google.util import log
 from jobspy.model import (
+    Compensation,
+    CompensationInterval,
     Country,
     JobPost,
     JobResponse,
@@ -306,6 +308,101 @@ _JOB_TYPE_RE = re.compile(
 )
 
 
+# Salary parsing — Google's card lines show forms like:
+#   "$60K–$80K a year"            (k-suffix range, yearly)
+#   "$20.00 - $34.00 Per Hour"    (decimal range, hourly)
+#   "$100,920–$162,600 a year"    (comma-thousand range, yearly)
+#   "$26.27–$30.07 an hour"       (decimal range, hourly)
+#   "$45K a year"                 (single value, yearly)
+# Optional leading "Salary " label, varying dash kinds (-, –, —, "to").
+_SALARY_RANGE_RE = re.compile(
+    r"""
+    \$?\s*([\d,]+(?:\.\d+)?)\s*([KkMm])?    # min amount + optional multiplier
+    \s*(?:[-–—]+|\sto\s)\s*                  # separator: any dash or " to "
+    \$?\s*([\d,]+(?:\.\d+)?)\s*([KkMm])?    # max amount + optional multiplier
+    \s*(?:a\s|an\s|per\s|/)?                # interval connector
+    (year|yr|annual|hour|hr|month|mo|week|wk|day|daily)? # interval
+    """,
+    re.I | re.X,
+)
+_SALARY_SINGLE_RE = re.compile(
+    r"""
+    \$?\s*([\d,]+(?:\.\d+)?)\s*([KkMm])?
+    \s*(?:a\s|an\s|per\s|/)
+    (year|yr|annual|hour|hr|month|mo|week|wk|day|daily)
+    """,
+    re.I | re.X,
+)
+_INTERVAL_MAP = {
+    "year": CompensationInterval.YEARLY,
+    "yr": CompensationInterval.YEARLY,
+    "annual": CompensationInterval.YEARLY,
+    "hour": CompensationInterval.HOURLY,
+    "hr": CompensationInterval.HOURLY,
+    "month": CompensationInterval.MONTHLY,
+    "mo": CompensationInterval.MONTHLY,
+    "week": CompensationInterval.WEEKLY,
+    "wk": CompensationInterval.WEEKLY,
+    "day": CompensationInterval.DAILY,
+    "daily": CompensationInterval.DAILY,
+}
+
+
+def _parse_amount(num_str: str, mult_char: str | None) -> float:
+    val = float(num_str.replace(",", ""))
+    if mult_char:
+        c = mult_char.lower()
+        if c == "k":
+            val *= 1000.0
+        elif c == "m":
+            val *= 1_000_000.0
+    return val
+
+
+def _extract_compensation(lines: list[str]) -> Compensation | None:
+    """Scan card lines for a salary range or single value, return Compensation
+    or None. Tries range first; falls back to single value with explicit
+    interval (e.g. '$50K a year').
+
+    Guard against false matches on incidental numeric ranges (employee
+    counts, version numbers, etc.) by requiring at least one strong
+    salary marker: $ prefix, K/M multiplier, or an interval word.
+    """
+    for ln in lines:
+        m = _SALARY_RANGE_RE.search(ln)
+        if not m:
+            continue
+        has_dollar = "$" in ln
+        has_mult = bool(m.group(2) or m.group(4))
+        has_interval = bool(m.group(5))
+        if not (has_dollar or has_mult or has_interval):
+            continue
+        min_amt = _parse_amount(m.group(1), m.group(2))
+        max_amt = _parse_amount(m.group(3), m.group(4))
+        interval_word = (m.group(5) or "").lower()
+        interval = _INTERVAL_MAP.get(interval_word)
+        return Compensation(
+            interval=interval,
+            min_amount=min_amt,
+            max_amount=max_amt,
+            currency="USD",
+        )
+    for ln in lines:
+        m = _SALARY_SINGLE_RE.search(ln)
+        if not m:
+            continue
+        # Single-RE requires explicit interval, so it's harder to false-match.
+        amt = _parse_amount(m.group(1), m.group(2))
+        interval = _INTERVAL_MAP.get(m.group(3).lower())
+        return Compensation(
+            interval=interval,
+            min_amount=amt,
+            max_amount=amt,
+            currency="USD",
+        )
+    return None
+
+
 def _build_job_post(card: dict[str, Any]) -> JobPost | None:
     title_from_aria: str = (card.get("title_from_aria") or "").strip()
     lines: list[str] = card.get("lines") or []
@@ -364,6 +461,8 @@ def _build_job_post(card: dict[str, Any]) -> JobPost | None:
                 seen_types.add(t)
                 job_types.append(t)
 
+    compensation = _extract_compensation(lines)
+
     is_remote = (
         "remote" in (raw_location or "").lower()
         or "remote" in title.lower()
@@ -387,5 +486,6 @@ def _build_job_post(card: dict[str, Any]) -> JobPost | None:
         date_posted=date_posted,
         is_remote=is_remote,
         job_type=job_types or None,
+        compensation=compensation,
         description=None,
     )
