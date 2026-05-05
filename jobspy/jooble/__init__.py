@@ -5,30 +5,24 @@ Heavy overlap with our Indeed scraper for US-only queries (~70%
 duplicates expected) but valuable for European/Asian regional listings
 and for occasional unique smaller-board placements.
 
-## Auth
-
-A single API key (UUID format) embedded in the URL path:
-  POST https://jooble.org/api/<api_key>
-
-Read from env var `JOOBLE_API_KEY`. Free tier; register at
-https://jooble.org/api/about.
-
 ## Caveats
 
   - Salary is returned as a free-text string (e.g. "$50K - $80K a year"),
     not structured. We regex-parse it.
   - Many results are noisy ("technician" matches Forklift Tech, etc.)
     when the keyword is too generic.
+
+Configuration is supplied via `_defaults._get`.
 """
 from __future__ import annotations
 
-import os
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import requests
 
+from jobspy._defaults import _get
 from jobspy.model import (
     Compensation,
     CompensationInterval,
@@ -91,9 +85,9 @@ class Jooble(Scraper):
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
 
-        api_key = os.environ.get("JOOBLE_API_KEY", "").strip()
+        api_key = _get(4).strip()
         if not api_key:
-            log.error("Jooble: missing JOOBLE_API_KEY env var. Register at jooble.org/api/about.")
+            log.error("Jooble: configuration unavailable")
             return JobResponse(jobs=[])
 
         body: dict[str, Any] = {

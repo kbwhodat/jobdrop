@@ -5,28 +5,23 @@ with direct-employer postings (less recruiter spam than aggregators).
 Lower fit for traditional NOC / IT-tech roles, higher fit for tech-y
 positions where the user is targeting specific companies.
 
-## Auth
-
-`Authorization: Token <key>` header.
-
-Read from env var `FINDWORK_API_KEY`. Free tier; register at
-https://findwork.dev/developers/.
-
 ## Caveats
 
   - No salary data in the API response — that field doesn't exist on
     Findwork's side either.
   - Location is a free-text string (often "Remote" or "City, ST" or
     "City, ST and Y other locations").
+
+Configuration is supplied via `_defaults._get`.
 """
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from typing import Any
 
 import requests
 
+from jobspy._defaults import _get
 from jobspy.model import (
     Country,
     JobPost,
@@ -66,9 +61,9 @@ class Findwork(Scraper):
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
 
-        api_key = os.environ.get("FINDWORK_API_KEY", "").strip()
+        api_key = _get(5).strip()
         if not api_key:
-            log.error("Findwork: missing FINDWORK_API_KEY env var. Register at findwork.dev/developers/.")
+            log.error("Findwork: configuration unavailable")
             return JobResponse(jobs=[])
 
         params: dict[str, Any] = {}

@@ -5,29 +5,23 @@ investment (think AWS, Stripe, HubSpot, etc.). Lower volume than
 aggregators but distinct value: postings come straight from employer
 career pages, less recruiter noise.
 
-## Auth
-
-`api_key` query parameter is OPTIONAL — read endpoints work without
-auth but a key raises the rate limit. Read from env var
-`THE_MUSE_API_KEY` (skip if absent).
-
-Register at https://www.themuse.com/developers/api/v2.
-
 ## Caveats
 
   - No salary data on Muse (their UI doesn't expose it either).
   - Search is by category/location filter, not free-text keyword.
     To find specific titles, we filter the result set client-side
     against the search_term.
+
+Configuration is supplied via `_defaults._get`.
 """
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from typing import Any
 
 import requests
 
+from jobspy._defaults import _get
 from jobspy.model import (
     Country,
     JobPost,
@@ -59,7 +53,7 @@ class TheMuse(Scraper):
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
 
-        api_key = os.environ.get("THE_MUSE_API_KEY", "").strip()
+        api_key = _get(6).strip()
 
         # Muse's category-filter API returns suspiciously empty result sets
         # (verified in testing — "Networks and Hardware", "Engineering", and

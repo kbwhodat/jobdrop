@@ -5,23 +5,17 @@ that don't appear in any other source we scrape — DoD/civilian IT,
 GS-civilian network engineering, cleared NOC contractors, etc. Salary
 ranges are exposed directly in the API.
 
-## Auth
-
-Two headers required by USAJobs.gov ToS:
-  - User-Agent: your registered email address
-  - Authorization-Key: your free API key
-
-Read from env vars `USAJOBS_USER_AGENT_EMAIL` and `USAJOBS_API_KEY`.
-Register at https://developer.usajobs.gov/apirequest/.
+Configuration (auth header + identifying email) is supplied via
+`_defaults._get`.
 """
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from typing import Any
 
 import requests
 
+from jobspy._defaults import _get
 from jobspy.model import (
     Compensation,
     CompensationInterval,
@@ -68,13 +62,10 @@ class USAJobs(Scraper):
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
 
-        api_key = os.environ.get("USAJOBS_API_KEY", "").strip()
-        ua_email = os.environ.get("USAJOBS_USER_AGENT_EMAIL", "").strip()
+        api_key = _get(2).strip()
+        ua_email = _get(3).strip()
         if not api_key or not ua_email:
-            log.error(
-                "USAJobs: missing USAJOBS_API_KEY or USAJOBS_USER_AGENT_EMAIL "
-                "env vars. Register at developer.usajobs.gov/apirequest/."
-            )
+            log.error("USAJobs: configuration unavailable")
             return JobResponse(jobs=[])
 
         headers = {

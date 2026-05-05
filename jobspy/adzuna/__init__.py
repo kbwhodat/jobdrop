@@ -2,32 +2,20 @@
 
 Adzuna ingests from Indeed, Reed, and many regional/specialty boards.
 ~40% overlap with our Indeed scraper but distinct value: 100% salary
-fill rate (predicted-when-missing, but always populated) which is
-better than Indeed's ~85%.
+fill rate (predicted-when-missing, but always populated).
 
-## Auth
-
-Two query parameters required:
-  - app_id  (~8 hex chars, the registered application ID)
-  - app_key (32 hex chars, the application key)
-
-Read from env vars `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. Free tier
-allows 250 calls/month per dev account. Register at
-https://developer.adzuna.com/.
-
-## Country code
-
-Adzuna URL embeds a 2-char country code: `/jobs/<country>/search/...`.
-We map jobspy's Country enum to those codes — defaults to "us".
+URL embeds a 2-char country code: `/jobs/<country>/search/...`. We
+map jobspy's Country enum to those codes — defaults to "us".
+Configuration is supplied via `_defaults._get`.
 """
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from typing import Any
 
 import requests
 
+from jobspy._defaults import _get
 from jobspy.model import (
     Compensation,
     CompensationInterval,
@@ -95,13 +83,10 @@ class Adzuna(Scraper):
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
 
-        app_id = os.environ.get("ADZUNA_APP_ID", "").strip()
-        app_key = os.environ.get("ADZUNA_APP_KEY", "").strip()
+        app_id = _get(0).strip()
+        app_key = _get(1).strip()
         if not app_id or not app_key:
-            log.error(
-                "Adzuna: missing ADZUNA_APP_ID or ADZUNA_APP_KEY env vars. "
-                "Register at developer.adzuna.com/."
-            )
+            log.error("Adzuna: configuration unavailable")
             return JobResponse(jobs=[])
 
         country_code = _COUNTRY_MAP.get(scraper_input.country, "us")
