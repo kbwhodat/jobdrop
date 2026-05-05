@@ -1,202 +1,412 @@
+"""Google Jobs scraper — Playwright + CDP-first.
+
+## Why this is built the way it is
+
+Google in 2026 hardened anti-bot in a way that defeats every standard
+browser-automation framework from a fresh request:
+
+  - Vanilla Playwright (headless or headed)        → /sorry/ CAPTCHA
+  - Real Chrome via channel="chrome"               → /sorry/ CAPTCHA
+  - undetected-chromedriver / nodriver / patchright → /sorry/ CAPTCHA
+  - All of the above + MCP's exact launch flags    → /sorry/ CAPTCHA
+
+The single thing that *does* work is connecting (via CDP) to a Chrome
+instance that has already accumulated session trust — i.e. a browser
+that's been used a few times to view normal Google pages, has cookies,
+and has run for more than a few seconds. That's why the long-running
+@playwright/mcp browser works while a fresh launch fails — it's profile
+warmth, not flags or stealth.
+
+So this scraper:
+  1. **CDP-connect** to a running Chrome instance. Two discovery paths:
+     a. `CHROME_CDP_URL` env var — point at any Chrome started with
+        `--remote-debugging-port=N` (the standard pattern).
+     b. Auto-discover a running @playwright/mcp Chromium by scanning for
+        a `--remote-debugging-port=` arg in the process list.
+  2. If neither is available, log a clear "no warm browser found"
+     message and return zero jobs. We don't try to launch our own —
+     it'll just CAPTCHA.
+
+The original HTTP scraper is preserved at `__init__.py.http-backup` for
+reference / future use if Google ever drops the JS gate.
+
+## Running a warm browser
+
+The cheapest path is Chrome itself:
+
+    /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\
+        --remote-debugging-port=9222 --user-data-dir=$HOME/.cache/jobspy-chrome
+
+Then export `CHROME_CDP_URL=http://127.0.0.1:9222` and run.
+"""
 from __future__ import annotations
 
-import math
+import os
 import re
-import json
-from typing import Tuple
+import subprocess
 from datetime import datetime, timedelta
+from typing import Any
+from urllib.parse import quote_plus
+from urllib.request import urlopen
 
-from jobspy.google.constant import headers_jobs, headers_initial, async_param
+from jobspy.google.util import log
 from jobspy.model import (
+    Country,
+    JobPost,
+    JobResponse,
+    JobType,
+    Location,
     Scraper,
     ScraperInput,
     Site,
-    JobPost,
-    JobResponse,
-    Location,
-    JobType,
 )
-from jobspy.util import extract_emails_from_text, extract_job_type, create_session
-from jobspy.google.util import log, find_job_info_initial_page, find_job_info
+
+
+_GOOGLE_JOBS_URL = "https://www.google.com/search?q={query}&udm=8"
+_NAV_TIMEOUT_MS = 30_000
+_RENDER_TIMEOUT_MS = 12_000
 
 
 class Google(Scraper):
     def __init__(
-        self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        proxies: list[str] | str | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
-        """
-        Initializes Google Scraper with the Goodle jobs search url
-        """
-        site = Site(Site.GOOGLE)
-        super().__init__(site, proxies=proxies, ca_cert=ca_cert)
-
-        self.country = None
-        self.session = None
-        self.scraper_input = None
-        self.jobs_per_page = 10
-        self.seen_urls = set()
-        self.url = "https://www.google.com/search"
-        self.jobs_url = "https://www.google.com/async/callback:550"
+        super().__init__(Site.GOOGLE, proxies=proxies, ca_cert=ca_cert)
+        self.scraper_input: ScraperInput | None = None
+        self.country: Country | None = None
+        # user_agent retained for API compat; ignored when CDP-connecting
+        # since we attach to a context that already has its own UA.
+        self.user_agent = user_agent
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
-        """
-        Scrapes Google for jobs with scraper_input criteria.
-        :param scraper_input: Information about job search criteria.
-        :return: JobResponse containing a list of jobs.
-        """
         self.scraper_input = scraper_input
-        self.scraper_input.results_wanted = min(900, scraper_input.results_wanted)
+        query = self._build_query(scraper_input)
+        url = _GOOGLE_JOBS_URL.format(query=quote_plus(query))
+        log.info(f"google: query={query!r}")
 
-        self.session = create_session(
-            proxies=self.proxies, ca_cert=self.ca_cert, is_tls=False, has_retry=True
-        )
-        forward_cursor, job_list = self._get_initial_cursor_and_jobs()
-        if forward_cursor is None:
-            log.warning(
-                "initial cursor not found, try changing your query or there was at most 10 results"
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeout
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            log.error(
+                "google: playwright is required. "
+                "Install with: pip install playwright && playwright install chromium"
             )
-            return JobResponse(jobs=job_list)
+            return JobResponse(jobs=[])
 
-        page = 1
-
-        while (
-            len(self.seen_urls) < scraper_input.results_wanted + scraper_input.offset
-            and forward_cursor
-        ):
-            log.info(
-                f"search page: {page} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)}"
+        cdp_url = _discover_cdp_url()
+        if not cdp_url:
+            log.error(
+                "google: no warm Chrome found. Google's anti-bot blocks fresh "
+                "browser launches. Start a long-running Chrome with:\n"
+                "  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome "
+                "--remote-debugging-port=9222 "
+                "--user-data-dir=$HOME/.cache/jobspy-chrome\n"
+                "Then export CHROME_CDP_URL=http://127.0.0.1:9222 and retry."
             )
+            return JobResponse(jobs=[])
+
+        log.info(f"google: connecting to CDP at {cdp_url}")
+        raw_cards: list[dict[str, Any]] = []
+
+        with sync_playwright() as pw:
             try:
-                jobs, forward_cursor = self._get_jobs_next_page(forward_cursor)
+                browser = pw.chromium.connect_over_cdp(cdp_url)
             except Exception as e:
-                log.error(f"failed to get jobs on page: {page}, {e}")
+                log.error(f"google: failed to connect to CDP {cdp_url}: {e}")
+                return JobResponse(jobs=[])
+
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
+                if "/sorry/" in page.url:
+                    log.error(
+                        f"google: even the warm browser hit /sorry/ CAPTCHA at "
+                        f"{page.url[:120]}. The session may need more warmth — "
+                        f"open the browser, search Google a few times, accept "
+                        f"any consent dialogs, then retry."
+                    )
+                    return JobResponse(jobs=[])
+                try:
+                    page.wait_for_selector(
+                        '[role="button"][aria-label*="to saves list"]',
+                        timeout=_RENDER_TIMEOUT_MS,
+                    )
+                except PlaywrightTimeout:
+                    log.warning(
+                        "google: no job-card buttons rendered within timeout — "
+                        "Google may be showing 'no results' for this query"
+                    )
+                    return JobResponse(jobs=[])
+
+                # Light scroll to nudge lazy-loaded cards.
+                page.mouse.wheel(0, 4000)
+                page.wait_for_timeout(800)
+
+                raw_cards = page.evaluate(_EXTRACT_JS)
+            finally:
+                page.close()
+
+        log.info(f"google: extracted {len(raw_cards)} raw cards")
+
+        jobs: list[JobPost] = []
+        seen_keys: set[str] = set()
+        wanted = getattr(scraper_input, "results_wanted", 25) or 25
+        for card in raw_cards:
+            post = _build_job_post(card)
+            if post is None:
+                continue
+            dedupe_key = post.id or f"{post.title}|{post.company_name}"
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+            jobs.append(post)
+            if len(jobs) >= wanted:
                 break
-            if not jobs:
-                log.info(f"found no jobs on page: {page}")
-                break
-            job_list += jobs
-            page += 1
-        return JobResponse(
-            jobs=job_list[
-                scraper_input.offset : scraper_input.offset
-                + scraper_input.results_wanted
-            ]
-        )
 
-    def _get_initial_cursor_and_jobs(self) -> Tuple[str, list[JobPost]]:
-        """Gets initial cursor and jobs to paginate through job listings"""
-        query = f"{self.scraper_input.search_term} jobs"
+        log.info(f"google: returning {len(jobs)} jobs")
+        return JobResponse(jobs=jobs)
 
-        def get_time_range(hours_old):
-            if hours_old <= 24:
-                return "since yesterday"
-            elif hours_old <= 72:
-                return "in the last 3 days"
-            elif hours_old <= 168:
-                return "in the last week"
-            else:
-                return "in the last month"
-
+    def _build_query(self, si: ScraperInput) -> str:
+        if si.google_search_term:
+            return si.google_search_term
+        parts: list[str] = []
+        if si.search_term:
+            parts.append(si.search_term)
+        parts.append("jobs")
         job_type_mapping = {
             JobType.FULL_TIME: "Full time",
             JobType.PART_TIME: "Part time",
             JobType.INTERNSHIP: "Internship",
             JobType.CONTRACT: "Contract",
         }
+        if si.job_type in job_type_mapping:
+            parts.append(job_type_mapping[si.job_type])
+        if si.location:
+            parts.append(f"near {si.location}")
+        hours_old = getattr(si, "hours_old", None)
+        if hours_old:
+            if hours_old <= 24:
+                parts.append("since yesterday")
+            elif hours_old <= 72:
+                parts.append("in the last 3 days")
+            elif hours_old <= 168:
+                parts.append("in the last week")
+            else:
+                parts.append("in the last month")
+        if si.is_remote:
+            parts.append("remote")
+        return " ".join(parts)
 
-        if self.scraper_input.job_type in job_type_mapping:
-            query += f" {job_type_mapping[self.scraper_input.job_type]}"
 
-        if self.scraper_input.location:
-            query += f" near {self.scraper_input.location}"
+# -----------------------------------------------------------------------------
+# CDP discovery — find a running Chrome we can attach to
+# -----------------------------------------------------------------------------
 
-        if self.scraper_input.hours_old:
-            time_filter = get_time_range(self.scraper_input.hours_old)
-            query += f" {time_filter}"
 
-        if self.scraper_input.is_remote:
-            query += " remote"
+def _discover_cdp_url() -> str | None:
+    """Return a CDP base URL we can `connect_over_cdp` to, or None.
 
-        if self.scraper_input.google_search_term:
-            query = self.scraper_input.google_search_term
+    Checks in order:
+      1. $CHROME_CDP_URL  (e.g. "http://127.0.0.1:9222")
+      2. $JOBSPY_CHROME_CDP_PORT (just the port, host = 127.0.0.1)
+      3. Common port 9222 (the standard Chrome remote-debug port)
+      4. Auto-detect: any running playwright-mcp Chromium with
+         `--remote-debugging-port=<N>` on the command line.
+    """
+    explicit = os.environ.get("CHROME_CDP_URL", "").strip()
+    if explicit and _cdp_alive(explicit):
+        return explicit
 
-        params = {"q": query, "udm": "8"}
-        response = self.session.get(self.url, headers=headers_initial, params=params)
+    port_env = os.environ.get("JOBSPY_CHROME_CDP_PORT", "").strip()
+    if port_env.isdigit():
+        candidate = f"http://127.0.0.1:{port_env}"
+        if _cdp_alive(candidate):
+            return candidate
 
-        pattern_fc = r'<div jsname="Yust4d"[^>]+data-async-fc="([^"]+)"'
-        match_fc = re.search(pattern_fc, response.text)
-        data_async_fc = match_fc.group(1) if match_fc else None
-        jobs_raw = find_job_info_initial_page(response.text)
-        jobs = []
-        for job_raw in jobs_raw:
-            job_post = self._parse_job(job_raw)
-            if job_post:
-                jobs.append(job_post)
-        return data_async_fc, jobs
+    standard = "http://127.0.0.1:9222"
+    if _cdp_alive(standard):
+        return standard
 
-    def _get_jobs_next_page(self, forward_cursor: str) -> Tuple[list[JobPost], str]:
-        params = {"fc": [forward_cursor], "fcv": ["3"], "async": [async_param]}
-        response = self.session.get(self.jobs_url, headers=headers_jobs, params=params)
-        return self._parse_jobs(response.text)
+    autodetected = _autodetect_running_pw_mcp_port()
+    if autodetected:
+        candidate = f"http://127.0.0.1:{autodetected}"
+        if _cdp_alive(candidate):
+            return candidate
+    return None
 
-    def _parse_jobs(self, job_data: str) -> Tuple[list[JobPost], str]:
-        """
-        Parses jobs on a page with next page cursor
-        """
-        start_idx = job_data.find("[[[")
-        end_idx = job_data.rindex("]]]") + 3
-        s = job_data[start_idx:end_idx]
-        parsed = json.loads(s)[0]
 
-        pattern_fc = r'data-async-fc="([^"]+)"'
-        match_fc = re.search(pattern_fc, job_data)
-        data_async_fc = match_fc.group(1) if match_fc else None
-        jobs_on_page = []
-        for array in parsed:
-            _, job_data = array
-            if not job_data.startswith("[[["):
-                continue
-            job_d = json.loads(job_data)
+def _cdp_alive(base_url: str, timeout: float = 1.5) -> bool:
+    try:
+        with urlopen(f"{base_url.rstrip('/')}/json/version", timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
 
-            job_info = find_job_info(job_d)
-            job_post = self._parse_job(job_info)
-            if job_post:
-                jobs_on_page.append(job_post)
-        return jobs_on_page, data_async_fc
 
-    def _parse_job(self, job_info: list):
-        job_url = job_info[3][0][0] if job_info[3] and job_info[3][0] else None
-        if job_url in self.seen_urls:
-            return
-        self.seen_urls.add(job_url)
+def _autodetect_running_pw_mcp_port() -> int | None:
+    """Scan running processes for a Chromium with --remote-debugging-port=N.
 
-        title = job_info[0]
-        company_name = job_info[1]
-        location = city = job_info[2]
-        state = country = date_posted = None
-        if location and "," in location:
-            city, state, *country = [*map(lambda x: x.strip(), location.split(","))]
-
-        days_ago_str = job_info[12]
-        if type(days_ago_str) == str:
-            match = re.search(r"\d+", days_ago_str)
-            days_ago = int(match.group()) if match else None
-            date_posted = (datetime.now() - timedelta(days=days_ago)).date()
-
-        description = job_info[19]
-
-        job_post = JobPost(
-            id=f"go-{job_info[28]}",
-            title=title,
-            company_name=company_name,
-            location=Location(
-                city=city, state=state, country=country[0] if country else None
-            ),
-            job_url=job_url,
-            date_posted=date_posted,
-            is_remote="remote" in description.lower() or "wfh" in description.lower(),
-            description=description,
-            emails=extract_emails_from_text(description),
-            job_type=extract_job_type(description),
+    macOS-only path right now (uses `ps -ax`). On Linux this still works.
+    Windows would need a different approach (tasklist/wmic) — left as TODO
+    if needed.
+    """
+    try:
+        out = subprocess.check_output(
+            ["ps", "-axo", "command="], text=True, stderr=subprocess.DEVNULL, timeout=2
         )
-        return job_post
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if "chromium" not in line.lower() and "chrome" not in line.lower():
+            continue
+        if "playwright" not in line.lower() and "mcp" not in line.lower() and "ms-playwright" not in line.lower():
+            continue
+        m = re.search(r"--remote-debugging-port=(\d+)", line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Page-side extraction
+# -----------------------------------------------------------------------------
+
+# Each job is a card whose only stable anchor is a "[role="button"]" with
+# aria-label "Add <title> to saves list". The card's *visible* content
+# lives at parent-depth 2 above that button — a small <div> containing
+# title / company / location-with-syndicator / posted-age / salary etc.
+# We walk up until we find a container with multi-line innerText, then
+# capture: aria, lines (newline-split), and any anchor href the card carries.
+_EXTRACT_JS = r"""
+() => {
+  const buttons = document.querySelectorAll('[role="button"]');
+  const cards = [];
+  const seen = new Set();
+  for (const btn of buttons) {
+    const aria = btn.getAttribute('aria-label') || '';
+    const m = aria.match(/^Add (.+) to saves list$/);
+    if (!m) continue;
+
+    // Walk up to find a container with multi-line text content.
+    let el = btn.parentElement;
+    let container = null;
+    for (let depth = 0; depth < 12 && el; depth++) {
+      const txt = (el.innerText || '').trim();
+      if (txt.length > 30 && txt.includes('\n')) {
+        container = el;
+        break;
+      }
+      el = el.parentElement;
+    }
+    if (!container) continue;
+    if (seen.has(container)) continue;
+    seen.add(container);
+
+    const lines = (container.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+    // Any anchor with a non-fragment href becomes the candidate apply URL.
+    let href = null;
+    for (const a of container.querySelectorAll('a[href]')) {
+      const h = a.href;
+      if (h && !h.endsWith('#') && !h.includes('#/')) {
+        href = h;
+        break;
+      }
+    }
+    cards.push({ title_from_aria: m[1], lines: lines, href: href });
+  }
+  return cards;
+}
+"""
+
+
+# -----------------------------------------------------------------------------
+# Card → JobPost
+# -----------------------------------------------------------------------------
+
+_AGE_RE = re.compile(r"(\d+)\s*(day|hour|week|month|minute)s?\s*ago", re.I)
+
+
+def _build_job_post(card: dict[str, Any]) -> JobPost | None:
+    title_from_aria: str = (card.get("title_from_aria") or "").strip()
+    lines: list[str] = card.get("lines") or []
+    href: str | None = card.get("href")
+
+    if not lines:
+        return None
+
+    # Layout in practice (Google Jobs, May 2026):
+    #   [0] title
+    #   [1] company
+    #   [2] location, often with " • via <syndicator>" suffix
+    #   [3...] tags: "Posted X days ago", "Salary $...", "Employment Type ...",
+    #          "Qualification ...", optional benefit chips
+    title = lines[0].strip() if len(lines) > 0 else None
+    if not title:
+        title = title_from_aria
+    if not title:
+        return None
+
+    company = lines[1].strip() if len(lines) > 1 else None
+    raw_location = lines[2].strip() if len(lines) > 2 else None
+
+    location_str = raw_location
+    if location_str and "•" in location_str:
+        location_str = location_str.split("•", 1)[0].strip()
+
+    location_obj: Location | None = None
+    if location_str:
+        city = state = None
+        if "," in location_str:
+            parts = [p.strip() for p in location_str.split(",")]
+            city = parts[0] or None
+            state = parts[1] if len(parts) > 1 else None
+        else:
+            city = location_str
+        location_obj = Location(city=city, state=state, country=Country.USA)
+
+    date_posted = None
+    for ln in lines:
+        m = _AGE_RE.search(ln)
+        if m:
+            n = int(m.group(1))
+            unit = m.group(2).lower()
+            now = datetime.now()
+            delta = {
+                "minute": timedelta(minutes=n),
+                "hour": timedelta(hours=n),
+                "day": timedelta(days=n),
+                "week": timedelta(weeks=n),
+                "month": timedelta(days=30 * n),
+            }.get(unit, timedelta(days=n))
+            date_posted = (now - delta).date()
+            break
+
+    is_remote = (
+        "remote" in (raw_location or "").lower()
+        or "remote" in title.lower()
+        or "wfh" in (raw_location or "").lower()
+    )
+
+    job_url = href
+    if not job_url:
+        q = " ".join(filter(None, [title, company])).strip()
+        job_url = f"https://www.google.com/search?q={quote_plus(q + ' job')}&udm=8"
+
+    id_seed = "|".join(filter(None, [title, company, raw_location]))
+    job_id = "go-" + str(abs(hash(id_seed)))[:14]
+
+    return JobPost(
+        id=job_id,
+        title=title,
+        company_name=company,
+        job_url=job_url,
+        location=location_obj,
+        date_posted=date_posted,
+        is_remote=is_remote,
+        description=None,
+    )
