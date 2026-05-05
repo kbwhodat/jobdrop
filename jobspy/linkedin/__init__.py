@@ -78,16 +78,13 @@ class LinkedIn(Scraper):
     # without crossing the rate-limit threshold.
     description_fetch_workers = 3
 
-    # Per-company result cap. Opt-in only — set on the instance to enable.
-    # When set (e.g. = 3), drops cards from a company once that many have
-    # been kept on this scrape, which counters the "Reboot Monkey × 5+
-    # near-cities" pattern. Off by default because:
-    #   1. it requires more pagination to refill the quota (~2× slower
-    #      on spam-heavy queries),
-    #   2. it actively hurts users targeting a specific employer with
-    #      many openings.
-    # Default None matches upstream behavior — no count change vs upstream.
-    max_results_per_company: int | None = None
+    # Per-company result cap. On by default for diversity — counters the
+    # "Reboot Monkey × 5+ near-cities" pattern by dropping cards once a
+    # company has hit this many results. Trade-off: ~2× slower on
+    # spam-heavy queries because pagination must refill the quota.
+    # Set to None to disable (matches upstream behavior; faster but
+    # results may be dominated by a single employer's bulk postings).
+    max_results_per_company: int | None = 3
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         """
