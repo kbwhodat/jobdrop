@@ -27,6 +27,13 @@ log = create_logger("Indeed")
 
 
 class Indeed(Scraper):
+    # Per-company result cap. On by default for diversity — observed in
+    # the wild: a single employer (Amazon, ARMADA, etc.) can dominate the
+    # top results with the same role posted to 5+ near-cities. Capping
+    # at 3 keeps a representative sample per employer and frees the
+    # quota for unrelated employers. Set to None to disable.
+    max_results_per_company: int | None = 3
+
     def __init__(
         self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
     ):
@@ -42,6 +49,7 @@ class Indeed(Scraper):
         self.jobs_per_page = 100
         self.num_workers = 10
         self.seen_urls = set()
+        self.company_counts: dict[str, int] = {}
         self.headers = None
         self.api_country_code = None
         self.base_url = None
@@ -58,12 +66,20 @@ class Indeed(Scraper):
         self.base_url = f"https://{domain}.indeed.com"
         self.headers = api_headers.copy()
         self.headers["indeed-co"] = self.scraper_input.country.indeed_domain_value
+        # Reset per-scrape state so successive scrape() calls on the same
+        # instance don't carry over dedupe / company-cap counts.
+        self.seen_urls = set()
+        self.company_counts = {}
         job_list = []
         page = 1
 
         cursor = None
 
-        while len(self.seen_urls) < scraper_input.results_wanted + scraper_input.offset:
+        # Loop on KEPT job count, not seen_urls. The per-company cap drops
+        # jobs after they're seen, so seen_urls grows whether we keep them
+        # or not — using it as the termination condition would exit early.
+        target = scraper_input.results_wanted + scraper_input.offset
+        while len(job_list) < target:
             log.info(
                 f"search page: {page} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)}"
             )
@@ -73,6 +89,9 @@ class Indeed(Scraper):
                 break
             job_list += jobs
             page += 1
+            # Stop if Indeed has no more pages, regardless of quota.
+            if cursor is None:
+                break
         return JobResponse(
             jobs=job_list[
                 scraper_input.offset : scraper_input.offset
@@ -212,6 +231,22 @@ class Indeed(Scraper):
         job_url = f'{self.base_url}/viewjob?jk={job["key"]}'
         if job_url in self.seen_urls:
             return
+
+        # Per-company cap — observed pattern: same role posted to 5+
+        # near-cities by one employer (e.g. ARMADA × 5 Seattle suburbs,
+        # Amazon × 11). Drop excess from any single employer to make
+        # room for diversity.
+        company_name = job["employer"].get("name") if job.get("employer") else None
+        if (
+            self.max_results_per_company is not None
+            and company_name
+        ):
+            company_key = company_name.lower()
+            if self.company_counts.get(company_key, 0) >= self.max_results_per_company:
+                self.seen_urls.add(job_url)
+                return
+            self.company_counts[company_key] = self.company_counts.get(company_key, 0) + 1
+
         self.seen_urls.add(job_url)
         description = job["description"]["html"]
         if self.scraper_input.description_format == DescriptionFormat.MARKDOWN:
