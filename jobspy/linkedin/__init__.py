@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse, urlunparse, unquote
@@ -14,11 +15,12 @@ from bs4.element import Tag
 from jobspy.exception import LinkedInException
 from jobspy.linkedin.constant import headers
 from jobspy.linkedin.util import (
+    extract_salary_from_description,
     is_job_remote,
     job_type_code,
     parse_job_type,
     parse_job_level,
-    parse_company_industry
+    parse_company_industry,
 )
 from jobspy.model import (
     JobPost,
@@ -70,6 +72,20 @@ class LinkedIn(Scraper):
         self.country = "worldwide"
         self.job_url_direct_regex = re.compile(r'(?<=\?url=)[^"]+')
 
+    # Concurrency cap for description-detail fetches. Higher fan-out triggers
+    # LinkedIn 429s, which cascade into exponential backoff (delay=5,
+    # 5s/10s/20s) and end up SLOWER than serial. 3 overlaps network I/O
+    # without crossing the rate-limit threshold.
+    description_fetch_workers = 3
+
+    # Per-company result cap. LinkedIn's guest search returns the same
+    # listing posted to N different cities (Reboot Monkey × 5+ TX suburbs
+    # observed) — each gets a slightly different title (the trailing
+    # city-code differs), so (title, company) dedupe doesn't catch them.
+    # Capping at 3 per company gives the user a representative sample
+    # without burying real diversity. Set to None to disable.
+    max_results_per_company = 3
+
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         """
         Scrapes LinkedIn for jobs with scraper_input criteria
@@ -78,7 +94,14 @@ class LinkedIn(Scraper):
         """
         self.scraper_input = scraper_input
         job_list: list[JobPost] = []
-        seen_ids = set()
+        seen_ids: set[str] = set()
+        # Dedupe key: (lower-cased title, lower-cased company). Catches exact
+        # duplicate postings returned by LinkedIn's pagination overlap.
+        seen_signatures: set[tuple[str, str]] = set()
+        # Per-company tally — Reboot Monkey-style spam (same role to N cities,
+        # title differs by trailing letter) is a different problem from exact
+        # duplicates and needs a count-based cap.
+        company_counts: dict[str, int] = {}
         start = scraper_input.offset // 10 * 10 if scraper_input.offset else 0
         request_count = 0
         seconds_old = (
@@ -143,25 +166,77 @@ class LinkedIn(Scraper):
             if len(job_cards) == 0:
                 return JobResponse(jobs=job_list)
 
+            # Phase 1: parse cards + dedupe BEFORE any detail fetch.
+            shallow_pairs: list[tuple[Tag, str]] = []
             for job_card in job_cards:
                 href_tag = job_card.find("a", class_="base-card__full-link")
-                if href_tag and "href" in href_tag.attrs:
-                    href = href_tag.attrs["href"].split("?")[0]
-                    job_id = href.split("-")[-1]
+                if not href_tag or "href" not in href_tag.attrs:
+                    continue
+                href = href_tag.attrs["href"].split("?")[0]
+                job_id = href.split("-")[-1]
+                if job_id in seen_ids:
+                    continue
 
-                    if job_id in seen_ids:
-                        continue
-                    seen_ids.add(job_id)
+                # Cheap dedupe by (title, company) — kills the same-job-spammed-
+                # to-many-cities pattern without paying for description fetches.
+                title_tag = job_card.find("span", class_="sr-only")
+                title_norm = (title_tag.get_text(strip=True) if title_tag else "").lower()
+                company_tag = job_card.find("h4", class_="base-search-card__subtitle")
+                company_a = company_tag.find("a") if company_tag else None
+                company_norm = (
+                    company_a.get_text(strip=True) if company_a else ""
+                ).lower()
+                signature = (title_norm, company_norm)
+                if signature and signature in seen_signatures:
+                    continue
+                if title_norm or company_norm:
+                    seen_signatures.add(signature)
 
+                # Per-company cap — kills the company-spam pattern
+                # (same role, different city, slightly different title).
+                if (
+                    self.max_results_per_company is not None
+                    and company_norm
+                    and company_counts.get(company_norm, 0)
+                    >= self.max_results_per_company
+                ):
+                    continue
+                if company_norm:
+                    company_counts[company_norm] = (
+                        company_counts.get(company_norm, 0) + 1
+                    )
+
+                seen_ids.add(job_id)
+                shallow_pairs.append((job_card, job_id))
+
+            # Phase 2: enrich (in parallel when description fetch is on).
+            fetch_desc = scraper_input.linkedin_fetch_description
+            page_posts: list[JobPost] = []
+            if fetch_desc and shallow_pairs:
+                with ThreadPoolExecutor(
+                    max_workers=self.description_fetch_workers
+                ) as executor:
+                    futures = {
+                        executor.submit(self._process_job, card, jid, True): jid
+                        for card, jid in shallow_pairs
+                    }
+                    for fut in as_completed(futures):
+                        try:
+                            post = fut.result()
+                            if post:
+                                page_posts.append(post)
+                        except Exception as e:
+                            raise LinkedInException(str(e))
+            else:
+                for card, jid in shallow_pairs:
                     try:
-                        fetch_desc = scraper_input.linkedin_fetch_description
-                        job_post = self._process_job(job_card, job_id, fetch_desc)
-                        if job_post:
-                            job_list.append(job_post)
-                        if not continue_search():
-                            break
+                        post = self._process_job(card, jid, False)
+                        if post:
+                            page_posts.append(post)
                     except Exception as e:
                         raise LinkedInException(str(e))
+
+            job_list.extend(page_posts)
 
             if continue_search():
                 time.sleep(random.uniform(self.delay, self.delay + self.band_delay))
@@ -224,6 +299,13 @@ class LinkedIn(Scraper):
         if full_descr:
             job_details = self._get_job_details(job_id)
             description = job_details.get("description")
+            # LinkedIn's guest-cards have salary stripped, but description
+            # bodies usually surface it (verified ~50-60% fill rate). Only
+            # populate when the search-card didn't already provide one.
+            if compensation is None and description:
+                derived = extract_salary_from_description(description)
+                if derived is not None:
+                    compensation = derived
         is_remote = is_job_remote(title, description, location)
 
         return JobPost(
