@@ -78,13 +78,16 @@ class LinkedIn(Scraper):
     # without crossing the rate-limit threshold.
     description_fetch_workers = 3
 
-    # Per-company result cap. LinkedIn's guest search returns the same
-    # listing posted to N different cities (Reboot Monkey × 5+ TX suburbs
-    # observed) — each gets a slightly different title (the trailing
-    # city-code differs), so (title, company) dedupe doesn't catch them.
-    # Capping at 3 per company gives the user a representative sample
-    # without burying real diversity. Set to None to disable.
-    max_results_per_company = 3
+    # Per-company result cap. Opt-in only — set on the instance to enable.
+    # When set (e.g. = 3), drops cards from a company once that many have
+    # been kept on this scrape, which counters the "Reboot Monkey × 5+
+    # near-cities" pattern. Off by default because:
+    #   1. it requires more pagination to refill the quota (~2× slower
+    #      on spam-heavy queries),
+    #   2. it actively hurts users targeting a specific employer with
+    #      many openings.
+    # Default None matches upstream behavior — no count change vs upstream.
+    max_results_per_company: int | None = None
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         """
