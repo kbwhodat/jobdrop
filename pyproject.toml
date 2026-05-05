@@ -27,6 +27,7 @@ tls-client = "^1.0.1"
 markdownify = "^1.1.0"
 regex = "^2024.4.28"
 selenium-driverless = "^1.9.4"
+curl-cffi = "^0.7.0"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
