@@ -52,11 +52,38 @@ work without environment setup. User-set env vars still win via
 
 ## Installation
 
+### As a Python library
+
 ```
 pip install -U jobdrop
 ```
 
 Python ≥ 3.10 required.
+
+### As an MCP server (Claude Desktop / Claude Code / Cursor / Cline)
+
+Install the binary once with `uv tool install` (or `pipx install`):
+
+```
+uv tool install "jobdrop[mcp]"
+# or:  pipx install "jobdrop[mcp]"
+```
+
+Then add to your MCP client config — e.g. `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "jobdrop": {
+      "command": "jobdrop-mcp-server"
+    }
+  }
+}
+```
+
+That's it — the client launches `jobdrop-mcp-server` as a stdio subprocess on demand. No daemon, no port, no nix.
+
+> **Note**: prefer the `uv tool install` path over `uvx --from "jobdrop[mcp]" jobdrop-mcp-server` in MCP configs. The direct-binary pattern matches what the working reference MCP servers (filesystem, git, etc.) use, and avoids subtle stdio-handoff issues that can occur with the uvx wrapper.
 
 ## Usage
 
