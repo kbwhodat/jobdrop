@@ -1,294 +1,177 @@
-<img src="https://github.com/cullenwatson/JobSpy/assets/78247585/ae185b7e-e444-4712-8bb9-fa97f53e896b" width="400">
+# JobSpy
 
-**JobSpy** is a job scraping library with the goal of aggregating all the jobs from popular job boards with one tool.
+A multi-source job scraper. Hits 17 job boards in one call, normalizes
+the results into a pandas DataFrame, and ships with anti-bot bypasses
+for the boards that block standard scrapers.
 
-> **This is the kbwhodat fork.** It adds 9 new sources, defeats anti-bot
-> walls on three of the upstream scrapers, and bakes in personal-use API
-> credentials so the library works out of the box. See **[Fork additions](#fork-additions)** below.
+## What's in here
 
-## Features
-
-- Scrapes job postings from **LinkedIn**, **Indeed**, **Glassdoor**, **Google**, **ZipRecruiter**, & other job boards concurrently
-- Aggregates the job postings in a dataframe
-- Proxies support to bypass blocking
-
-## Fork additions
-
-### New sources (9 added)
+### 17 sources
 
 | `site_name` | Source | Mechanism |
 |---|---|---|
-| `usajobs` | USAJobs.gov | Public federal API |
+| `linkedin` | LinkedIn | Public listing scrape with optional detail-page enrichment |
+| `indeed` | Indeed | GraphQL with the `Int!` radius fix + per-company cap + paginate-until-quota |
+| `glassdoor` | Glassdoor | selenium-driverless headless to defeat Cloudflare 403; in-page GraphQL fetch |
+| `google` | Google Jobs | selenium-driverless headless against `udm=8`; SERP DOM walk |
+| `zip_recruiter` | ZipRecruiter | `curl_cffi` + `safari17_2_ios` TLS impersonation against the web HTML endpoint |
+| `bayt` | Bayt | Public scrape |
+| `naukri` | Naukri | Public scrape |
+| `bdjobs` | BDJobs | Public scrape |
+| `usajobs` | USAJobs.gov | Federal public API |
 | `adzuna` | Adzuna | Public API |
 | `jooble` | Jooble | Public API |
 | `findwork` | Findwork.dev | Public API |
 | `the_muse` | The Muse | Public API |
-| `insight_global` | Insight Global staffing | Server-rendered HTML scrape with hidden JSON blob |
+| `insight_global` | Insight Global staffing | Server-rendered HTML scrape with hidden JSON blob per result |
 | `clearance_jobs` | ClearanceJobs (DHI) | Public JSON API + parallel detail-page enrichment for full JD, salary, type, remote bool |
-| `kforce` | Kforce staffing | Direct Azure Cognitive Search (bypasses Imperva on the public host) |
-| `greenhouse` | Greenhouse-hosted boards (Anthropic, Anduril, Stripe, etc.) | Google `site:` dorks via selenium-driverless → public Greenhouse API; 3-layer staleness filter (404 / `application_deadline` / `first_published` age, default 90-day cap) |
+| `kforce` | Kforce staffing | Direct Azure Cognitive Search calls (bypasses Imperva on the public host) |
+| `greenhouse` | Greenhouse-hosted boards | Google `site:` dorks via selenium-driverless → public Greenhouse API; 3-layer staleness filter |
 
-### Upstream scraper fixes
+### Anti-bot solved
 
-- **Google** — replaced dead HTTP scraper with selenium-driverless headless. Defeats Google's 2026 CAPTCHA wall that bypasses standard Playwright / undetected-chromedriver / nodriver / patchright.
-- **Glassdoor** — selenium-driverless rewrite to bypass Cloudflare 403; URL-encoded location, tolerant of partial GraphQL errors.
-- **ZipRecruiter** — moved to `curl_cffi` with `safari17_2_ios` TLS impersonation against the web HTML endpoint (the iOS-app API is dead behind Cloudflare).
-- **Indeed** — fixed `radius=25` default after Indeed promoted the GraphQL field to `Int!`; per-company cap to surface diverse employers; pagination loop fixed.
+- **Google** — selenium-driverless cold-start headless. Defeats the 2026 CAPTCHA wall that takes out Playwright / undetected-chromedriver / nodriver / patchright.
+- **Glassdoor** — selenium-driverless rewrite to bypass Cloudflare 403; URL-encoded location, partial-GraphQL-error tolerance.
+- **ZipRecruiter** — `curl_cffi` + `safari17_2_ios` against the web HTML endpoint. The iOS-app API is dead behind Cloudflare.
+- **Kforce** — bypasses Imperva on the public host by calling the Azure Cognitive Search backend directly.
+- **Greenhouse** — uses the same selenium-driverless infrastructure as Google for `site:` dorks across all greenhouse-hosted boards.
+
+### Other tightening
+
 - **LinkedIn** — salary extraction from description body, optional per-company cap, parallel detail fetches.
+- **Indeed** — fixed `radius=25` default after Indeed promoted the GraphQL field to `Int!`; per-company cap to surface diverse employers; pagination loop fixed.
+- **ClearanceJobs** — search API gives a 200-char preview; this fork parallel-fetches `/api/v1/jobs/{id}` so you get the full JD, salary range, structured `job_type`, and authoritative `remote` bool.
+- **Greenhouse** — three layers of stale-protection (404 drop / past `application_deadline` / `first_published` age with 90-day default that respects `hours_old`).
 
 ### Bundled credentials
 
-API keys for USAJobs, Adzuna, Jooble, Findwork, and The Muse are baked into a positional resolver (`jobspy/_defaults.py`) so the new sources work without environment setup. User-set env vars still win via `setdefault` semantics.
+API keys for USAJobs, Adzuna, Jooble, Findwork, and The Muse are baked
+into a positional resolver (`jobspy/_defaults.py`) so the new sources
+work without environment setup. User-set env vars still win via
+`setdefault` semantics.
 
-![jobspy](https://github.com/cullenwatson/JobSpy/assets/78247585/ec7ef355-05f6-4fd3-8161-a817e31c5c57)
-
-### Installation
+## Installation
 
 ```
-pip install -U python-jobspy
+pip install -U git+https://github.com/kbwhodat/JobSpy.git
 ```
 
-_Python version >= [3.10](https://www.python.org/downloads/release/python-3100/) required_
+Python ≥ 3.10 required.
 
-### Usage
+## Usage
 
 ```python
-import csv
 from jobspy import scrape_jobs
 
 jobs = scrape_jobs(
-    site_name=["indeed", "linkedin", "zip_recruiter", "google"], # "glassdoor", "bayt", "naukri", "bdjobs"
-    search_term="software engineer",
-    google_search_term="software engineer jobs near San Francisco, CA since yesterday",
-    location="San Francisco, CA",
+    site_name=["insight_global", "clearance_jobs", "kforce", "greenhouse",
+               "linkedin", "indeed", "google"],
+    search_term="site reliability engineer",
+    location="Atlanta, GA",
     results_wanted=20,
-    hours_old=72,
-    country_indeed='USA',
-    
-    # linkedin_fetch_description=True # gets more info such as description, direct job url (slower)
-    # proxies=["208.195.175.46:65095", "208.195.175.45:65095", "localhost"],
+    hours_old=720,          # 30-day freshness cap
+    country_indeed="usa",
 )
 print(f"Found {len(jobs)} jobs")
-print(jobs.head())
-jobs.to_csv("jobs.csv", quoting=csv.QUOTE_NONNUMERIC, escapechar="\\", index=False) # to_excel
+print(jobs[["site", "title", "company", "location", "min_amount", "max_amount", "job_url"]].head())
 ```
 
-### Output
+## Parameters
 
 ```
-SITE           TITLE                             COMPANY           CITY          STATE  JOB_TYPE  INTERVAL  MIN_AMOUNT  MAX_AMOUNT  JOB_URL                                            DESCRIPTION
-indeed         Software Engineer                 AMERICAN SYSTEMS  Arlington     VA     None      yearly    200000      150000      https://www.indeed.com/viewjob?jk=5e409e577046...  THIS POSITION COMES WITH A 10K SIGNING BONUS!...
-indeed         Senior Software Engineer          TherapyNotes.com  Philadelphia  PA     fulltime  yearly    135000      110000      https://www.indeed.com/viewjob?jk=da39574a40cb...  About Us TherapyNotes is the national leader i...
-linkedin       Software Engineer - Early Career  Lockheed Martin   Sunnyvale     CA     fulltime  yearly    None        None        https://www.linkedin.com/jobs/view/3693012711      Description:By bringing together people that u...
-linkedin       Full-Stack Software Engineer      Rain              New York      NY     fulltime  yearly    None        None        https://www.linkedin.com/jobs/view/3696158877      Rain’s mission is to create the fastest and ea...
-zip_recruiter Software Engineer - New Grad       ZipRecruiter      Santa Monica  CA     fulltime  yearly    130000      150000      https://www.ziprecruiter.com/jobs/ziprecruiter...  We offer a hybrid work environment. Most US-ba...
-zip_recruiter Software Developer                 TEKsystems        Phoenix       AZ     fulltime  hourly    65          75          https://www.ziprecruiter.com/jobs/teksystems-0...  Top Skills' Details• 6 years of Java developme...
-
+scrape_jobs(
+  site_name              list[str] | str — any of the 17 sources above (default: all)
+  search_term            str        — keyword query
+  google_search_term     str        — Google Jobs override (only filter for `google`)
+  location               str        — "City, ST" or ZIP. Each scraper geocodes its own way.
+  distance               int        — radius miles, default 50
+  is_remote              bool       — remote-only filter (where supported)
+  job_type               str        — "fulltime" | "parttime" | "contract" | "internship"
+  easy_apply             bool       — direct-board apply only (LinkedIn easy-apply is broken)
+  results_wanted         int        — per-site target
+  offset                 int        — pagination offset
+  hours_old              int        — drop postings older than N hours
+  country_indeed         str        — Indeed/Glassdoor country (see list below)
+  description_format     str        — "markdown" | "html"
+  enforce_annual_salary  bool       — convert hourly/monthly to yearly
+  linkedin_fetch_description  bool  — full JD + direct URL (slower)
+  linkedin_company_ids   list[int]  — filter LinkedIn by company IDs
+  proxies                list[str]  — round-robin proxies, "user:pass@host:port"
+  ca_cert                str        — CA cert path for proxies
+  user_agent             str        — override the default UA
+  verbose                int        — 0 errors / 1 warnings / 2 all
+)
 ```
 
-### Parameters for `scrape_jobs()`
+### Per-scraper limitations
 
-```plaintext
-Optional
-├── site_name (list|str): 
-|    linkedin, zip_recruiter, indeed, glassdoor, google, bayt, bdjobs,
-|    naukri, usajobs, adzuna, jooble, findwork, the_muse,
-|    insight_global, clearance_jobs, kforce, greenhouse
-|    (default is all)
-│
-├── search_term (str)
-|
-├── google_search_term (str)
-|     search term for google jobs. This is the only param for filtering google jobs.
-│
-├── location (str)
-│
-├── distance (int): 
-|    in miles, default 50
-│
-├── job_type (str): 
-|    fulltime, parttime, internship, contract
-│
-├── proxies (list): 
-|    in format ['user:pass@host:port', 'localhost']
-|    each job board scraper will round robin through the proxies
-|
-├── is_remote (bool)
-│
-├── results_wanted (int): 
-|    number of job results to retrieve for each site specified in 'site_name'
-│
-├── easy_apply (bool): 
-|    filters for jobs that are hosted on the job board site (LinkedIn easy apply filter no longer works)
-|
-├── user_agent (str): 
-|    override the default user agent which may be outdated
-│
-├── description_format (str): 
-|    markdown, html (Format type of the job descriptions. Default is markdown.)
-│
-├── offset (int): 
-|    starts the search from an offset (e.g. 25 will start the search from the 25th result)
-│
-├── hours_old (int): 
-|    filters jobs by the number of hours since the job was posted 
-|    (ZipRecruiter and Glassdoor round up to next day.)
-│
-├── verbose (int) {0, 1, 2}: 
-|    Controls the verbosity of the runtime printouts 
-|    (0 prints only errors, 1 is errors+warnings, 2 is all logs. Default is 2.)
+- **Indeed** — only one of `hours_old` / (`job_type`+`is_remote`) / `easy_apply` per call.
+- **LinkedIn** — only one of `hours_old` / `easy_apply` per call.
+- **ClearanceJobs** — location/remote filters require facet IDs from the dropdown endpoints (not implemented). Filter client-side or scope by keyword.
+- **InsightGlobal** — does not expose client-company name (it's the staffing firm). `is_remote` is not available in their data.
+- **Greenhouse** — Google indexes some postings after they're filled. Stale 404s are filtered out; the freshness cutoff filters "live but ancient" postings (default 90 days, override with `hours_old`).
 
-├── linkedin_fetch_description (bool): 
-|    fetches full description and direct job url for LinkedIn (Increases requests by O(n))
-│
-├── linkedin_company_ids (list[int]): 
-|    searches for linkedin jobs with specific company ids
-|
-├── country_indeed (str): 
-|    filters the country on Indeed & Glassdoor (see below for correct spelling)
-|
-├── enforce_annual_salary (bool): 
-|    converts wages to annual salary
-|
-├── ca_cert (str)
-|    path to CA Certificate file for proxies
-```
+## JobPost schema
 
 ```
-├── Indeed limitations:
-|    Only one from this list can be used in a search:
-|    - hours_old
-|    - job_type & is_remote
-|    - easy_apply
-│
-└── LinkedIn limitations:
-|    Only one from this list can be used in a search:
-|    - hours_old
-|    - easy_apply
+JobPost
+├── id, title, company_name, company_url, job_url
+├── location { country, city, state }
+├── description
+├── is_remote
+├── date_posted
+├── job_type        fulltime | parttime | contract | internship
+├── compensation
+│   ├── interval   yearly | monthly | weekly | daily | hourly
+│   ├── min_amount, max_amount, currency
+│   └── salary_source
+├── job_level                                  (LinkedIn, ClearanceJobs)
+├── company_industry                           (LinkedIn, Indeed, Greenhouse, Kforce)
+├── company_country, company_addresses,
+│   company_employees_label, company_revenue_label,
+│   company_description, company_logo          (Indeed)
+├── skills, experience_range,
+│   company_rating, company_reviews_count,
+│   vacancy_count, work_from_home_type         (Naukri)
+└── emails
 ```
 
-## Supported Countries for Job Searching
+## Indeed / Glassdoor country list
 
-### **LinkedIn**
+Pass `country_indeed` (use the exact name; `*` = also supported on Glassdoor):
 
-LinkedIn searches globally & uses only the `location` parameter. 
+| | | | |
+|---|---|---|---|
+| Argentina | Australia* | Austria* | Bahrain |
+| Belgium* | Brazil* | Canada* | Chile |
+| China | Colombia | Costa Rica | Czech Republic |
+| Denmark | Ecuador | Egypt | Finland |
+| France* | Germany* | Greece | Hong Kong* |
+| Hungary | India* | Indonesia | Ireland* |
+| Israel | Italy* | Japan | Kuwait |
+| Luxembourg | Malaysia | Mexico* | Morocco |
+| Netherlands* | New Zealand* | Nigeria | Norway |
+| Oman | Pakistan | Panama | Peru |
+| Philippines | Poland | Portugal | Qatar |
+| Romania | Saudi Arabia | Singapore* | South Africa |
+| South Korea | Spain* | Sweden | Switzerland* |
+| Taiwan | Thailand | Turkey | Ukraine |
+| United Arab Emirates | UK* | USA* | Uruguay |
+| Venezuela | Vietnam* | | |
 
-### **ZipRecruiter**
-
-ZipRecruiter searches for jobs in **US/Canada** & uses only the `location` parameter.
-
-### **Indeed / Glassdoor**
-
-Indeed & Glassdoor supports most countries, but the `country_indeed` parameter is required. Additionally, use the `location`
-parameter to narrow down the location, e.g. city & state if necessary. 
-
-You can specify the following countries when searching on Indeed (use the exact name, * indicates support for Glassdoor):
-
-|                      |              |            |                |
-|----------------------|--------------|------------|----------------|
-| Argentina            | Australia*   | Austria*   | Bahrain        |
-| Belgium*             | Brazil*      | Canada*    | Chile          |
-| China                | Colombia     | Costa Rica | Czech Republic |
-| Denmark              | Ecuador      | Egypt      | Finland        |
-| France*              | Germany*     | Greece     | Hong Kong*     |
-| Hungary              | India*       | Indonesia  | Ireland*       |
-| Israel               | Italy*       | Japan      | Kuwait         |
-| Luxembourg           | Malaysia     | Mexico*    | Morocco        |
-| Netherlands*         | New Zealand* | Nigeria    | Norway         |
-| Oman                 | Pakistan     | Panama     | Peru           |
-| Philippines          | Poland       | Portugal   | Qatar          |
-| Romania              | Saudi Arabia | Singapore* | South Africa   |
-| South Korea          | Spain*       | Sweden     | Switzerland*   |
-| Taiwan               | Thailand     | Turkey     | Ukraine        |
-| United Arab Emirates | UK*          | USA*       | Uruguay        |
-| Venezuela            | Vietnam*     |            |                |
-
-### **Bayt**
-
-Bayt only uses the search_term parameter currently and searches internationally
-
-
+LinkedIn searches globally and uses only `location`. ZipRecruiter is US/Canada and uses only `location`. Bayt searches internationally with only `search_term`.
 
 ## Notes
-* Indeed is the best scraper currently with no rate limiting.  
-* All the job board endpoints are capped at around 1000 jobs on a given search.  
-* LinkedIn is the most restrictive and usually rate limits around the 10th page with one ip. Proxies are a must basically.
 
-## Frequently Asked Questions
+- Most boards cap a single search at ~1000 results.
+- LinkedIn rate-limits aggressively around the 10th page of pagination on a single IP. Use `proxies`.
+- For Indeed search-term tuning: it searches the description too. Use `-foo` to exclude, `"exact phrase"` for exact match. Example:
+  ```python
+  search_term='"site reliability engineer" (kubernetes OR terraform) -recruiter'
+  ```
+- For Google: copy the exact filter syntax from a real Google Jobs search and pass it as `google_search_term`.
+- For Greenhouse: keyword + location are passed straight to a Google `site:greenhouse.io` query, so Boolean operators and quotes work. Don't quote the full `"City, ST"` — quote the city alone, leave the state bare.
 
----
-**Q: Why is Indeed giving unrelated roles?**  
-**A:** Indeed searches the description too.
+## License
 
-- use - to remove words
-- "" for exact match
-
-Example of a good Indeed query
-
-```py
-search_term='"engineering intern" software summer (java OR python OR c++) 2025 -tax -marketing'
-```
-
-This searches the description/title and must include software, summer, 2025, one of the languages, engineering intern exactly, no tax, no marketing.
-
----
-
-**Q: No results when using "google"?**  
-**A:** You have to use super specific syntax. Search for google jobs on your browser and then whatever pops up in the google jobs search box after applying some filters is what you need to copy & paste into the google_search_term. 
-
----
-
-**Q: Received a response code 429?**  
-**A:** This indicates that you have been blocked by the job board site for sending too many requests. All of the job board sites are aggressive with blocking. We recommend:
-
-- Wait some time between scrapes (site-dependent).
-- Try using the proxies param to change your IP address.
-
----
-
-### JobPost Schema
-
-```plaintext
-JobPost
-├── title
-├── company
-├── company_url
-├── job_url
-├── location
-│   ├── country
-│   ├── city
-│   ├── state
-├── is_remote
-├── description
-├── job_type: fulltime, parttime, internship, contract
-├── job_function
-│   ├── interval: yearly, monthly, weekly, daily, hourly
-│   ├── min_amount
-│   ├── max_amount
-│   ├── currency
-│   └── salary_source: direct_data, description (parsed from posting)
-├── date_posted
-└── emails
-
-Linkedin specific
-└── job_level
-
-Linkedin & Indeed specific
-└── company_industry
-
-Indeed specific
-├── company_country
-├── company_addresses
-├── company_employees_label
-├── company_revenue_label
-├── company_description
-└── company_logo
-
-Naukri specific
-├── skills
-├── experience_range
-├── company_rating
-├── company_reviews_count
-├── vacancy_count
-└── work_from_home_type
-```
+MIT. See `LICENSE`.
