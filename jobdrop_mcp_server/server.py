@@ -42,28 +42,68 @@ async def scrape_jobs_tool(
     offset: int = 0,
     verbose: int = 1
 ) -> str:
-    """
-    Search for jobs across multiple job boards including LinkedIn, Indeed, Glassdoor, 
-    ZipRecruiter, Google Jobs, Bayt, Naukri, and BDJobs.
-    
+    """Search 20 job boards in one call. Returns normalized results
+    (title, company, location, salary, job_type, date_posted) as a
+    markdown report.
+
+    ## Available sites — pick what fits the query
+
+    The default `site_name` is a conservative subset. **For most
+    queries, override it explicitly** to get the right coverage.
+
+    - **Broad mainstream**: `linkedin`, `indeed`, `glassdoor`, `google`,
+      `zip_recruiter`
+    - **AI-curated broad** (best general-purpose, ~140 jobs/page,
+      AI-tagged with seniority/comp/skills): `hiring_cafe`
+    - **Startup jobs** (50k+ AngelList-era startup roles): `wellfound`
+    - **Community/newsletter aggregator** (curated, fastest):
+      `collab_work`
+    - **Company-direct** (any Greenhouse-hosted board via Google
+      site: dorks): `greenhouse`
+    - **Government/federal** (US): `usajobs`
+    - **Cleared roles** (security clearance required): `clearance_jobs`
+    - **Staffing agencies**: `kforce`, `insight_global`
+    - **Free aggregator APIs**: `adzuna`, `jooble`, `findwork`,
+      `the_muse`
+    - **Regional**: `bayt` (Middle East), `naukri` (India), `bdjobs`
+      (Bangladesh)
+
+    ## Picking sites for common queries
+
+    - "remote startup engineer" → `["wellfound", "hiring_cafe"]`
+    - "software engineer in [city]" → `["indeed", "linkedin",
+      "hiring_cafe", "greenhouse"]`
+    - "federal / cleared role" → `["usajobs", "clearance_jobs"]`
+    - "general broad search, max coverage" → `["hiring_cafe",
+      "indeed"]` (least overlap)
+    - "fastest results" → `["collab_work"]` (~280 ms/call)
+    - "specific company hiring" → `["greenhouse"]` with company in
+      `search_term`
+
     Args:
-        search_term: Job search keywords (e.g., 'software engineer', 'data scientist')
-        ctx: MCP context for progress reporting
-        location: Job location (e.g., 'San Francisco, CA', 'New York', 'Remote')
-        site_name: Job boards to search from available options
-        results_wanted: Number of job results to retrieve (1-1000)
-        job_type: Type of employment ('fulltime', 'parttime', 'internship', 'contract')
-        is_remote: Filter for remote jobs only
-        hours_old: Filter jobs posted within the last N hours
-        distance: Search radius in miles from location (1-100)
-        easy_apply: Filter for jobs with easy apply options
-        country_indeed: Country for Indeed/Glassdoor searches
-        linkedin_fetch_description: Fetch full job descriptions from LinkedIn (slower)
-        offset: Number of results to skip (for pagination)
-        verbose: Logging verbosity (0=errors only, 1=warnings, 2=all logs)
-    
+        search_term: Job keywords (e.g., "site reliability engineer").
+            Required.
+        site_name: List of sites from the catalog above. Override the
+            default for better coverage on niche queries.
+        location: City/state, "Remote", or country (e.g.,
+            "Atlanta, GA"). Optional.
+        results_wanted: Number of jobs to return (default 15).
+        job_type: One of "fulltime", "parttime", "internship",
+            "contract".
+        is_remote: True to filter remote-only.
+        hours_old: Only return jobs posted in last N hours.
+        distance: Search radius in miles from location.
+        easy_apply: True to filter to easy-apply only.
+        country_indeed: Country for indeed/glassdoor (default "usa").
+        linkedin_fetch_description: True for full LinkedIn descriptions
+            (slower).
+        offset: Skip first N results (pagination).
+        verbose: 0=errors, 1=warnings, 2=info.
+
     Returns:
-        Formatted job search results with detailed job information
+        Markdown-formatted job listings with title, company, location,
+        salary range, job type, post date, apply URL, and description
+        snippet.
     """
     try:
         logger.info(f"Starting job search for: {search_term}")
@@ -229,26 +269,47 @@ def get_supported_sites() -> str:
     """
     try:
         sites_info = {
-            "linkedin": "LinkedIn - Professional networking platform with job listings (requires careful rate limiting)",
-            "indeed": "Indeed - One of the largest job search engines globally (most reliable)",
-            "glassdoor": "Glassdoor - Job listings with company reviews and salary information",
-            "zip_recruiter": "ZipRecruiter - Job matching platform for US/Canada",
-            "google": "Google Jobs - Aggregated job listings from Google (use specific search terms)",
-            "bayt": "Bayt - Middle East focused job portal",
-            "naukri": "Naukri - India's leading job portal with detailed job information",
-            "bdjobs": "BDJobs - Bangladesh's premier job portal"
+            # Broad mainstream
+            "linkedin": "LinkedIn — professional network. High-quality listings, strict rate limits. Set linkedin_fetch_description=true for full JDs (slower).",
+            "indeed": "Indeed — global aggregator. Most reliable + highest volume. Best general-purpose source.",
+            "glassdoor": "Glassdoor — listings + company reviews + salary data. selenium-driverless used to defeat Cloudflare.",
+            "zip_recruiter": "ZipRecruiter — US/Canada-focused. curl_cffi safari17_2_ios TLS impersonation.",
+            "google": "Google Jobs — SERP `udm=8` aggregation. Use very specific search terms.",
+            # AI-enriched + curated
+            "hiring_cafe": "Hiring Cafe — AI-curated, ~140 jobs/page with rich tags (seniority, comp, skills, workplace_type). Best general-purpose broad search. selenium-driverless to defeat Cloudflare.",
+            "wellfound": "Wellfound (formerly AngelList) — 50k+ startup roles. Camoufox engine to defeat DataDome on /role/* per-route block.",
+            "collab_work": "CollabWork — community/newsletter aggregator, ~2k curated roles, fastest source (~280ms).",
+            # Company-direct + government
+            "greenhouse": "Greenhouse — any greenhouse-hosted board (most YC-stage and Series A+ companies). Google site: dorks via selenium-driverless. 3-layer staleness filter (404 / past deadline / 90-day age cap).",
+            "usajobs": "USAJobs — US federal government roles. Public API.",
+            # Staffing
+            "clearance_jobs": "ClearanceJobs (DHI) — security-cleared roles. JSON API + parallel detail-page enrichment.",
+            "kforce": "Kforce — staffing agency. Direct Azure Cognitive Search calls (bypasses Imperva on the public host).",
+            "insight_global": "Insight Global — staffing agency. Server-rendered HTML with hidden JSON blob per result.",
+            # Free aggregator APIs
+            "adzuna": "Adzuna — free aggregator API, 100% salary fill rate (predicted when missing).",
+            "jooble": "Jooble — free aggregator API, 60+ countries.",
+            "findwork": "Findwork.dev — developer-focused aggregator API.",
+            "the_muse": "The Muse — culture-forward aggregator API.",
+            # Regional
+            "bayt": "Bayt — Middle East focused job portal.",
+            "naukri": "Naukri — India's leading job portal. Includes skills, experience_range, company_rating.",
+            "bdjobs": "BDJobs — Bangladesh's premier job portal.",
         }
-        
-        response = "## 🔗 Supported Job Board Sites\n\n"
+
+        response = "## 🔗 Supported Job Board Sites (20 total)\n\n"
         for site, description in sites_info.items():
-            response += f"- **{site}**: {description}\n"
-        
+            response += f"- **`{site}`**: {description}\n"
+
         response += "\n## 💡 Usage Tips\n"
-        response += "- **Best for beginners**: Start with `[\'indeed\', \'zip_recruiter\']`\n"
-        response += "- **For comprehensive search**: Use `[\'indeed\', \'linkedin\', \'glassdoor\', \'google\']`\n"
-        response += "- **For specific regions**: Include regional sites like 'bayt', 'naukri', 'bdjobs'\n"
-        response += "- **Rate limiting**: LinkedIn is most restrictive, Indeed is most reliable\n"
-        
+        response += "- **General broad search**: `[\"hiring_cafe\", \"indeed\"]` — least overlap, most coverage.\n"
+        response += "- **Startup roles**: `[\"wellfound\", \"hiring_cafe\"]`.\n"
+        response += "- **Government/cleared**: `[\"usajobs\", \"clearance_jobs\"]`.\n"
+        response += "- **Specific company**: `[\"greenhouse\"]` with the company name in `search_term`.\n"
+        response += "- **Fastest single-source**: `[\"collab_work\"]` (~280ms/call).\n"
+        response += "- **Regional**: include `bayt` (Middle East), `naukri` (India), `bdjobs` (Bangladesh) as needed.\n"
+        response += "- **Rate limiting**: LinkedIn most restrictive; Indeed most reliable; collab_work fastest.\n"
+
         return response
     except Exception as e:
         logger.error(f"Error getting supported sites: {e}")
@@ -278,12 +339,15 @@ def get_job_search_tips() -> str:
 - **State/Country**: "California", "Texas", "United Kingdom"
 - **Multiple locations**: Run separate searches for different cities
 
-### 🏢 **Site Selection Guide**
-- **Start small**: Begin with 2-3 sites to test your search
-- **Indeed**: Most reliable, least rate limiting
-- **LinkedIn**: Best quality but strict rate limits
-- **ZipRecruiter**: Good for US/Canada
-- **Google**: Use very specific search terms
+### 🏢 **Site Selection Guide** (20 sites total — see `get_supported_sites`)
+- **Start small**: 2-3 sites is plenty for a good query
+- **Best general-purpose**: `hiring_cafe` (~140 AI-tagged jobs/page) + `indeed` (broadest mainstream)
+- **Startup roles**: `wellfound` + `hiring_cafe`
+- **Federal / cleared**: `usajobs` + `clearance_jobs`
+- **Specific company**: `greenhouse` with company name in `search_term`
+- **Fastest single-source**: `collab_work` (~280ms/call)
+- **Regional**: `bayt` (Middle East), `naukri` (India), `bdjobs` (Bangladesh)
+- **LinkedIn**: best quality but strict rate limits
 
 ### ⚡ **Performance Tips**
 - **Start with 10-20 results** then increase if needed
