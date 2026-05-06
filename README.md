@@ -1,6 +1,6 @@
-# JobSpy
+# jobdrop
 
-A multi-source job scraper. Hits 17 job boards in one call, normalizes
+A multi-source job scraper. Hits 20 job boards in one call, normalizes
 the results into a pandas DataFrame, and ships with anti-bot bypasses
 for the boards that block standard scrapers.
 
@@ -46,14 +46,14 @@ for the boards that block standard scrapers.
 ### Bundled credentials
 
 API keys for USAJobs, Adzuna, Jooble, Findwork, and The Muse are baked
-into a positional resolver (`jobspy/_defaults.py`) so the new sources
+into a positional resolver (`jobdrop/_defaults.py`) so the new sources
 work without environment setup. User-set env vars still win via
 `setdefault` semantics.
 
 ## Installation
 
 ```
-pip install -U git+https://github.com/kbwhodat/JobSpy.git
+pip install -U jobdrop
 ```
 
 Python ≥ 3.10 required.
@@ -61,7 +61,7 @@ Python ≥ 3.10 required.
 ## Usage
 
 ```python
-from jobspy import scrape_jobs
+from jobdrop import scrape_jobs
 
 jobs = scrape_jobs(
     site_name=["insight_global", "clearance_jobs", "kforce", "greenhouse",

@@ -3,15 +3,17 @@ requires = [ "poetry-core",]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "python-jobspy"
-version = "1.1.82"
-description = "Job scraper for LinkedIn, Indeed, Glassdoor, ZipRecruiter & Bayt"
-authors = ["Cullen Watson <cullen@cullenwatson.com>", "Zachary Hampton <zachary@zacharysproducts.com>"]
-homepage = "https://github.com/cullenwatson/JobSpy"
+name = "jobdrop"
+version = "2.0.0"
+description = "20-source job scraper library + MCP server. LinkedIn, Indeed, Glassdoor, Google, ZipRecruiter, Wellfound, Hiring Cafe, Greenhouse, USAJobs, Adzuna, Jooble, Findwork, The Muse, Insight Global, Clearance Jobs, Kforce, CollabWork, Naukri, Bayt, BDJobs."
+authors = ["kbwhodat <katobyan@gmail.com>"]
+homepage = "https://github.com/kbwhodat/jobdrop"
 readme = "README.md"
-keywords = [ "jobs-scraper", "linkedin", "indeed", "glassdoor", "ziprecruiter", "bayt", "naukri"]
+keywords = [ "jobs-scraper", "mcp", "linkedin", "indeed", "glassdoor", "ziprecruiter", "wellfound", "hiring-cafe", "greenhouse", "usajobs"]
 [[tool.poetry.packages]]
-include = "jobspy"
+include = "jobdrop"
+[[tool.poetry.packages]]
+include = "jobdrop_mcp_server"
 
 [tool.black]
 line-length = 88
@@ -28,6 +30,22 @@ markdownify = "^1.1.0"
 regex = "^2024.4.28"
 selenium-driverless = "^1.9.4"
 curl-cffi = "^0.7.0"
+# Wellfound: Firefox-based anti-detect browser. Defeats DataDome's
+# per-route /role/* WAF rule where every Chromium tool (selenium-driverless,
+# Patchright, Zendriver, Pydoll) gets blocked. ~300MB Firefox auto-fetch
+# on first call to AsyncCamoufox().
+camoufox = "^0.4.11"
+
+# MCP server (optional). Install with `pip install jobdrop[mcp]` or
+# `uvx --from "jobdrop[mcp]" jobdrop-mcp-server`.
+fastmcp = { version = ">=0.2.0", optional = true }
+mcp = { version = ">=1.1.0", optional = true }
+
+[tool.poetry.extras]
+mcp = ["fastmcp", "mcp"]
+
+[tool.poetry.scripts]
+jobdrop-mcp-server = "jobdrop_mcp_server:main"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
