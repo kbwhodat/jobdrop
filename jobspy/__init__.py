@@ -13,6 +13,7 @@ from jobspy.adzuna import Adzuna
 from jobspy.bayt import BaytScraper
 from jobspy.bdjobs import BDJobs
 from jobspy.clearancejobs import ClearanceJobs
+from jobspy.collabwork import CollabWork
 from jobspy.findwork import Findwork
 from jobspy.glassdoor import Glassdoor
 from jobspy.google import Google
@@ -87,6 +88,7 @@ def scrape_jobs(
         Site.CLEARANCE_JOBS: ClearanceJobs,
         Site.KFORCE: Kforce,
         Site.GREENHOUSE: Greenhouse,
+        Site.COLLAB_WORK: CollabWork,
     }
     set_logger_level(verbose)
     job_type = get_enum_from_value(job_type) if job_type else None

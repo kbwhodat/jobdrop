@@ -303,6 +303,7 @@ class Site(Enum):
     CLEARANCE_JOBS = "clearance_jobs"
     KFORCE = "kforce"
     GREENHOUSE = "greenhouse"
+    COLLAB_WORK = "collab_work"
 
 
 class SalarySource(Enum):
