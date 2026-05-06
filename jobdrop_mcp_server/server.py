@@ -67,23 +67,13 @@ async def scrape_jobs_tool(
     """
     try:
         logger.info(f"Starting job search for: {search_term}")
-        
-        # Send progress update
-        await ctx.info(f"Searching for '{search_term}' jobs...")
-        
+
         # Validate site names
         valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "bdjobs", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
         if invalid_sites:
             return f"Error: Invalid site names: {invalid_sites}. Valid sites: {valid_sites}"
-        
-        # Report progress
-        await ctx.report_progress(
-            progress=0.1,
-            total=1.0,
-            message="Initializing job search..."
-        )
-        
+
         # Call jobdrop scrape_jobs function
         jobs_df = scrape_jobs(
             site_name=site_name,
@@ -102,14 +92,7 @@ async def scrape_jobs_tool(
             description_format="markdown"
         )
         
-        await ctx.report_progress(
-            progress=0.8,
-            total=1.0,
-            message="Processing job results..."
-        )
-        
         if jobs_df.empty:
-            await ctx.warning("No jobs found matching the search criteria")
             return "No jobs found matching your criteria. Try adjusting your search parameters."
         
         # Format results
@@ -177,13 +160,6 @@ async def scrape_jobs_tool(
             
             job_listings.append("\n".join(job_info))
         
-        # Report completion
-        await ctx.report_progress(
-            progress=1.0,
-            total=1.0,
-            message="Job search completed!"
-        )
-        
         # Combine everything
         full_response = f"{results_summary}\n\n" + "\n\n---\n\n".join(job_listings)
         
@@ -201,7 +177,7 @@ async def scrape_jobs_tool(
             full_response += f"- **Jobs with salary info:** {len(salary_jobs)}\n"
             full_response += f"- **Average salary range:** ${avg_min:,.0f} - ${avg_max:,.0f}\n"
         
-        await ctx.info(f"Successfully found {len(jobs_df)} jobs")
+        logger.info(f"Successfully found {len(jobs_df)} jobs")
         return full_response
         
     except Exception as e:
