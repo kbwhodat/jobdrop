@@ -6,7 +6,9 @@ An MCP server that provides job scraping capabilities using the Jobdrop library.
 Built with FastMCP for modern MCP protocol compliance.
 """
 
+import json
 import logging
+import re
 from typing import Optional, List
 import pandas as pd
 
@@ -25,6 +27,166 @@ logger = logging.getLogger("jobdrop-mcp")
 mcp = FastMCP("Jobdrop Job Search Server")
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Post-filter helpers
+# ─────────────────────────────────────────────────────────────────────────
+
+# Salaries above this threshold are almost certainly upstream-feed
+# glitches (e.g. CollabWork's Dover Fueling Solutions $8B/yr listing,
+# from numeric overflow in their source data). Drop silently — keeps
+# downstream agents from averaging absurd numbers and hallucinating.
+_SUSPICIOUS_SALARY_THRESHOLD = 5_000_000  # USD/yr cash, conservative
+
+_SENIORITY_PATTERNS = [
+    ("executive", re.compile(r"\b(director|vp|vice president|head of|chief|cto|ceo|cio|cfo)\b", re.I)),
+    ("staff", re.compile(r"\b(staff|principal|tech lead|architect|distinguished|fellow)\b", re.I)),
+    ("senior", re.compile(r"\b(senior|sr\.?|iii)\b", re.I)),
+    ("entry", re.compile(r"\b(intern|entry|junior|jr\.?|trainee|associate|graduate|new[\s-]grad)\b", re.I)),
+    ("mid", re.compile(r"\b(mid|intermediate|ii)\b", re.I)),
+]
+
+
+def _infer_seniority(title: str) -> Optional[str]:
+    """Heuristic title→canonical-seniority mapping. Returns None when unsure."""
+    if not isinstance(title, str):
+        return None
+    for level, pattern in _SENIORITY_PATTERNS:
+        if pattern.search(title):
+            return level
+    return None
+
+
+def _is_salary_sane(row) -> bool:
+    """Drop jobs with absurd salary values (upstream-feed bugs)."""
+    min_amt = row.get("min_amount")
+    if pd.notna(min_amt) and float(min_amt) > _SUSPICIOUS_SALARY_THRESHOLD:
+        return False
+    max_amt = row.get("max_amount")
+    if pd.notna(max_amt) and float(max_amt) > _SUSPICIOUS_SALARY_THRESHOLD:
+        return False
+    return True
+
+
+def _apply_post_filters(
+    jobs_df: pd.DataFrame,
+    *,
+    min_salary: Optional[int],
+    max_salary: Optional[int],
+    seniority_level: Optional[List[str]],
+) -> pd.DataFrame:
+    """Apply post-scrape filters. Returns filtered DataFrame."""
+    if jobs_df.empty:
+        return jobs_df
+
+    # Always: drop suspicious salaries
+    jobs_df = jobs_df[jobs_df.apply(_is_salary_sane, axis=1)]
+
+    # Salary floor
+    if min_salary is not None:
+        # Keep rows where min_amount >= min_salary OR salary unknown
+        # (don't drop salary-less postings — they may match)
+        mask = jobs_df["min_amount"].isna() | (jobs_df["min_amount"] >= min_salary)
+        jobs_df = jobs_df[mask]
+
+    # Salary ceiling
+    if max_salary is not None:
+        mask = jobs_df["max_amount"].isna() | (jobs_df["max_amount"] <= max_salary)
+        jobs_df = jobs_df[mask]
+
+    # Seniority — keep matching levels OR unknown (don't drop unknown by default)
+    if seniority_level:
+        wanted = {lv.lower().strip() for lv in seniority_level}
+        def _row_matches(row):
+            inferred = _infer_seniority(row.get("title", ""))
+            if inferred is None:
+                return True  # don't filter what we can't classify
+            return inferred in wanted
+        jobs_df = jobs_df[jobs_df.apply(_row_matches, axis=1)]
+
+    return jobs_df.reset_index(drop=True)
+
+
+def _format_jobs_json(
+    jobs_df: pd.DataFrame,
+    *,
+    search_term: str,
+    location: Optional[str],
+    site_name: List[str],
+    offset: int,
+    results_wanted: int,
+) -> str:
+    """Serialize results as a structured JSON string for agent consumption."""
+    jobs_list = []
+    for _, job in jobs_df.iterrows():
+        job_dict = {
+            "title": _safe(job.get("title")),
+            "company": _safe(job.get("company")),
+            "location": _safe(job.get("location")),
+            "site": _safe(job.get("site")),
+            "job_url": _safe(job.get("job_url")),
+            "job_type": _safe(job.get("job_type")),
+            "is_remote": bool(job.get("is_remote")) if pd.notna(job.get("is_remote")) else None,
+            "date_posted": str(job.get("date_posted")) if pd.notna(job.get("date_posted")) else None,
+            "salary": {
+                "min": _num(job.get("min_amount")),
+                "max": _num(job.get("max_amount")),
+                "currency": _safe(job.get("currency")),
+                "interval": _safe(job.get("interval")),
+            } if pd.notna(job.get("min_amount")) or pd.notna(job.get("max_amount")) else None,
+            "description": _safe(job.get("description")),
+            "company_industry": _safe(job.get("company_industry")),
+            "job_level": _safe(job.get("job_level")),
+            "skills": _safe(job.get("skills")),
+            "experience_range": _safe(job.get("experience_range")),
+        }
+        # Drop null values for compactness
+        job_dict = {k: v for k, v in job_dict.items() if v is not None}
+        jobs_list.append(job_dict)
+
+    salary_jobs = jobs_df[pd.notna(jobs_df.get("min_amount", pd.Series(dtype=float)))]
+    summary = {
+        "total_returned": len(jobs_list),
+        "search_term": search_term,
+        "location": location,
+        "sites_searched": list(site_name),
+        "remote_count": int((jobs_df.get("is_remote", pd.Series(dtype=bool)) == True).sum()),
+        "salary_known_count": len(salary_jobs),
+    }
+    if len(salary_jobs) > 0:
+        summary["avg_min_salary"] = float(salary_jobs["min_amount"].mean())
+        summary["avg_max_salary"] = float(salary_jobs["max_amount"].mean())
+
+    return json.dumps({
+        "jobs": jobs_list,
+        "summary": summary,
+        "pagination": {
+            "offset": offset,
+            "results_returned": len(jobs_list),
+            "next_offset_hint": offset + max(len(jobs_list), results_wanted),
+        },
+    }, default=str, indent=2)
+
+
+def _safe(v):
+    """Return v or None if pandas NaN/null."""
+    if v is None:
+        return None
+    if pd.isna(v):
+        return None
+    return v
+
+
+def _num(v):
+    """Return v as float or None."""
+    if v is None or pd.isna(v):
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+
 @mcp.tool()
 async def scrape_jobs_tool(
     search_term: str,
@@ -40,7 +202,11 @@ async def scrape_jobs_tool(
     country_indeed: str = "usa",
     linkedin_fetch_description: bool = False,
     offset: int = 0,
-    verbose: int = 1
+    verbose: int = 1,
+    min_salary: Optional[int] = None,
+    max_salary: Optional[int] = None,
+    seniority_level: Optional[List[str]] = None,
+    output_format: str = "markdown",
 ) -> str:
     """Search 20 job boards in one call. Returns normalized results
     (title, company, location, salary, job_type, date_posted) as a
@@ -99,11 +265,21 @@ async def scrape_jobs_tool(
             (slower).
         offset: Skip first N results (pagination).
         verbose: 0=errors, 1=warnings, 2=info.
+        min_salary: Drop jobs with min_amount below this. Jobs with
+            unknown salary are kept (not all postings list comp).
+        max_salary: Drop jobs with max_amount above this.
+        seniority_level: Filter by inferred seniority. Any of
+            ["entry", "mid", "senior", "staff", "executive"]. Jobs
+            whose title doesn't classify cleanly are kept (don't drop
+            ambiguous titles).
+        output_format: "markdown" (default, human-readable) or "json"
+            (structured `{jobs:[...], summary:{...}, pagination:{...}}`,
+            recommended for agent/automation use).
 
     Returns:
-        Markdown-formatted job listings with title, company, location,
-        salary range, job type, post date, apply URL, and description
-        snippet.
+        Markdown report (default) or JSON string (when output_format
+        is "json"). Both include jobs, summary stats, and pagination
+        hint to call again with offset=next_offset.
     """
     try:
         logger.info(f"Starting job search for: {search_term}")
@@ -132,10 +308,41 @@ async def scrape_jobs_tool(
             description_format="markdown"
         )
         
+        # Apply post-scrape filters (sanity check + salary + seniority)
+        original_count = len(jobs_df)
+        jobs_df = _apply_post_filters(
+            jobs_df,
+            min_salary=min_salary,
+            max_salary=max_salary,
+            seniority_level=seniority_level,
+        )
+        filtered_count = len(jobs_df)
+        if filtered_count < original_count:
+            logger.info(
+                f"Post-filters dropped {original_count - filtered_count} of "
+                f"{original_count} jobs (sanity/salary/seniority)"
+            )
+
         if jobs_df.empty:
-            return "No jobs found matching your criteria. Try adjusting your search parameters."
-        
-        # Format results
+            msg = "No jobs found matching your criteria. Try adjusting your search parameters."
+            if original_count > 0:
+                msg += f" (Note: {original_count} raw results dropped by post-filters.)"
+            if output_format == "json":
+                return json.dumps({"jobs": [], "summary": {"total_returned": 0, "note": msg}, "pagination": {"offset": offset, "results_returned": 0}})
+            return msg
+
+        # JSON output for agent/automation use
+        if output_format == "json":
+            return _format_jobs_json(
+                jobs_df,
+                search_term=search_term,
+                location=location,
+                site_name=site_name,
+                offset=offset,
+                results_wanted=results_wanted,
+            )
+
+        # Format results (markdown — default)
         results_summary = f"🎯 Found {len(jobs_df)} jobs for '{search_term}'"
         if location:
             results_summary += f" in {location}"
@@ -216,7 +423,14 @@ async def scrape_jobs_tool(
             avg_max = salary_jobs['max_amount'].mean()
             full_response += f"- **Jobs with salary info:** {len(salary_jobs)}\n"
             full_response += f"- **Average salary range:** ${avg_min:,.0f} - ${avg_max:,.0f}\n"
-        
+
+        # Pagination hint — agents commonly fail to paginate without explicit guidance
+        next_offset = offset + max(len(jobs_df), results_wanted)
+        full_response += (
+            f"\n💡 **More results?** Call again with `offset={next_offset}` "
+            f"(currently at offset={offset}, returned {len(jobs_df)} jobs).\n"
+        )
+
         logger.info(f"Successfully found {len(jobs_df)} jobs")
         return full_response
         
