@@ -59,7 +59,9 @@ zip_recruiter Software Developer                 TEKsystems        Phoenix      
 ```plaintext
 Optional
 ├── site_name (list|str): 
-|    linkedin, zip_recruiter, indeed, glassdoor, google, bayt, bdjobs
+|    linkedin, zip_recruiter, indeed, glassdoor, google, bayt, bdjobs,
+|    naukri, usajobs, adzuna, jooble, findwork, the_muse,
+|    insight_global, clearance_jobs, kforce, greenhouse
 |    (default is all)
 │
 ├── search_term (str)

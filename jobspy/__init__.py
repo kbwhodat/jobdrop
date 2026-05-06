@@ -12,11 +12,15 @@ import pandas as pd
 from jobspy.adzuna import Adzuna
 from jobspy.bayt import BaytScraper
 from jobspy.bdjobs import BDJobs
+from jobspy.clearancejobs import ClearanceJobs
 from jobspy.findwork import Findwork
 from jobspy.glassdoor import Glassdoor
 from jobspy.google import Google
+from jobspy.greenhouse import Greenhouse
 from jobspy.indeed import Indeed
+from jobspy.insightglobal import InsightGlobal
 from jobspy.jooble import Jooble
+from jobspy.kforce import Kforce
 from jobspy.linkedin import LinkedIn
 from jobspy.naukri import Naukri
 from jobspy.the_muse import TheMuse
@@ -79,6 +83,10 @@ def scrape_jobs(
         Site.JOOBLE: Jooble,
         Site.FINDWORK: Findwork,
         Site.THE_MUSE: TheMuse,
+        Site.INSIGHT_GLOBAL: InsightGlobal,
+        Site.CLEARANCE_JOBS: ClearanceJobs,
+        Site.KFORCE: Kforce,
+        Site.GREENHOUSE: Greenhouse,
     }
     set_logger_level(verbose)
     job_type = get_enum_from_value(job_type) if job_type else None

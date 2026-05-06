@@ -299,6 +299,10 @@ class Site(Enum):
     JOOBLE = "jooble"
     FINDWORK = "findwork"
     THE_MUSE = "the_muse"
+    INSIGHT_GLOBAL = "insight_global"
+    CLEARANCE_JOBS = "clearance_jobs"
+    KFORCE = "kforce"
+    GREENHOUSE = "greenhouse"
 
 
 class SalarySource(Enum):
