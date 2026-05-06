@@ -2,11 +2,43 @@
 
 **JobSpy** is a job scraping library with the goal of aggregating all the jobs from popular job boards with one tool.
 
+> **This is the kbwhodat fork.** It adds 9 new sources, defeats anti-bot
+> walls on three of the upstream scrapers, and bakes in personal-use API
+> credentials so the library works out of the box. See **[Fork additions](#fork-additions)** below.
+
 ## Features
 
 - Scrapes job postings from **LinkedIn**, **Indeed**, **Glassdoor**, **Google**, **ZipRecruiter**, & other job boards concurrently
 - Aggregates the job postings in a dataframe
 - Proxies support to bypass blocking
+
+## Fork additions
+
+### New sources (9 added)
+
+| `site_name` | Source | Mechanism |
+|---|---|---|
+| `usajobs` | USAJobs.gov | Public federal API |
+| `adzuna` | Adzuna | Public API |
+| `jooble` | Jooble | Public API |
+| `findwork` | Findwork.dev | Public API |
+| `the_muse` | The Muse | Public API |
+| `insight_global` | Insight Global staffing | Server-rendered HTML scrape with hidden JSON blob |
+| `clearance_jobs` | ClearanceJobs (DHI) | Public JSON API + parallel detail-page enrichment for full JD, salary, type, remote bool |
+| `kforce` | Kforce staffing | Direct Azure Cognitive Search (bypasses Imperva on the public host) |
+| `greenhouse` | Greenhouse-hosted boards (Anthropic, Anduril, Stripe, etc.) | Google `site:` dorks via selenium-driverless → public Greenhouse API; 3-layer staleness filter (404 / `application_deadline` / `first_published` age, default 90-day cap) |
+
+### Upstream scraper fixes
+
+- **Google** — replaced dead HTTP scraper with selenium-driverless headless. Defeats Google's 2026 CAPTCHA wall that bypasses standard Playwright / undetected-chromedriver / nodriver / patchright.
+- **Glassdoor** — selenium-driverless rewrite to bypass Cloudflare 403; URL-encoded location, tolerant of partial GraphQL errors.
+- **ZipRecruiter** — moved to `curl_cffi` with `safari17_2_ios` TLS impersonation against the web HTML endpoint (the iOS-app API is dead behind Cloudflare).
+- **Indeed** — fixed `radius=25` default after Indeed promoted the GraphQL field to `Int!`; per-company cap to surface diverse employers; pagination loop fixed.
+- **LinkedIn** — salary extraction from description body, optional per-company cap, parallel detail fetches.
+
+### Bundled credentials
+
+API keys for USAJobs, Adzuna, Jooble, Findwork, and The Muse are baked into a positional resolver (`jobspy/_defaults.py`) so the new sources work without environment setup. User-set env vars still win via `setdefault` semantics.
 
 ![jobspy](https://github.com/cullenwatson/JobSpy/assets/78247585/ec7ef355-05f6-4fd3-8161-a817e31c5c57)
 
