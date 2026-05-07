@@ -6,6 +6,7 @@ An MCP server that provides job scraping capabilities using the Jobdrop library.
 Built with FastMCP for modern MCP protocol compliance.
 """
 
+import difflib
 import json
 import logging
 import re
@@ -25,6 +26,64 @@ logger = logging.getLogger("jobdrop-mcp")
 
 # Create FastMCP server instance
 mcp = FastMCP("Jobdrop Job Search Server")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Defensive input normalization helpers
+# ─────────────────────────────────────────────────────────────────────────
+
+# Common site-name aliases / typos that smaller models hallucinate
+_SITE_ALIASES = {
+    "angel_list": "wellfound",
+    "angellist": "wellfound",
+    "angel": "wellfound",
+    "ziprecruiter": "zip_recruiter",
+    "zip-recruiter": "zip_recruiter",
+    "linked_in": "linkedin",
+    "linked-in": "linkedin",
+    "the-muse": "the_muse",
+    "themuse": "the_muse",
+    "indeed.com": "indeed",
+    "google_jobs": "google",
+    "googlejobs": "google",
+    "hiring-cafe": "hiring_cafe",
+    "hiringcafe": "hiring_cafe",
+    "collab-work": "collab_work",
+    "collabwork": "collab_work",
+    "us_jobs": "usajobs",
+    "us-jobs": "usajobs",
+    "clearance-jobs": "clearance_jobs",
+    "insight-global": "insight_global",
+    "bd_jobs": "bdjobs",
+    "bd-jobs": "bdjobs",
+}
+
+_REMOTE_LOCATION_ALIASES = {"remote", "anywhere", "wfh", "work from home", "us-remote", "remote-us"}
+
+
+def _coerce_bool(v):
+    """Accept "true"/"false"/1/0/etc. as booleans (small-model commonly send strings)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "1", "y", "t")
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return v
+
+
+def _coerce_int(v):
+    """Accept stringified ints (small models commonly send "5" instead of 5)."""
+    if v is None or isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        try:
+            return int(v.strip())
+        except (ValueError, AttributeError):
+            return v
+    if isinstance(v, float):
+        return int(v)
+    return v
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -307,19 +366,59 @@ async def scrape_jobs_tool(
     try:
         logger.info(f"Starting job search for: {search_term}")
 
-        # Defensive coercion — smaller models commonly pass a single string
-        # where a list is expected. Accept both rather than fail with a
-        # confusing schema error.
+        # Defensive coercion — smaller models commonly pass single strings
+        # where a list is expected, stringified booleans/ints, or
+        # capitalized values. Accept all rather than fail with a confusing
+        # schema error.
         if isinstance(site_name, str):
             site_name = [site_name]
         if isinstance(seniority_level, str):
             seniority_level = [seniority_level]
+        if seniority_level:
+            seniority_level = [s.lower().strip() if isinstance(s, str) else s for s in seniority_level]
+
+        # Coerce stringified booleans + ints
+        is_remote = _coerce_bool(is_remote)
+        easy_apply = _coerce_bool(easy_apply)
+        linkedin_fetch_description = _coerce_bool(linkedin_fetch_description)
+        concise = _coerce_bool(concise)
+        results_wanted = _coerce_int(results_wanted) or 15
+        offset = _coerce_int(offset) or 0
+        distance = _coerce_int(distance) or 50
+        verbose = _coerce_int(verbose) if verbose is not None else 1
+        if hours_old is not None:
+            hours_old = _coerce_int(hours_old)
+        if min_salary is not None:
+            min_salary = _coerce_int(min_salary)
+        if max_salary is not None:
+            max_salary = _coerce_int(max_salary)
+
+        # Auto-detect remote when location says so — common natural-language
+        # pattern ("Find remote SWE jobs" → location='Remote'). Set the flag
+        # on the user's behalf so the right scraper paths fire.
+        if location and isinstance(location, str) and location.strip().lower() in _REMOTE_LOCATION_ALIASES:
+            is_remote = True
+            location = None  # don't pass "Remote" as a city to scrapers
+
+        # Apply site-name aliases (angel_list → wellfound, ziprecruiter → zip_recruiter, etc.)
+        site_name = [_SITE_ALIASES.get(s.lower().strip(), s) for s in site_name if isinstance(s, str)]
 
         # Validate site names
         valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "bdjobs", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
         if invalid_sites:
-            return f"Error: Invalid site names: {invalid_sites}. Valid sites: {valid_sites}"
+            # Fuzzy-match suggestions help the model recover on retry instead
+            # of giving up after a typo.
+            suggestions = {}
+            for bad in invalid_sites:
+                matches = difflib.get_close_matches(str(bad).lower(), valid_sites, n=1, cutoff=0.55)
+                if matches:
+                    suggestions[bad] = matches[0]
+            msg = f"Error: Invalid site names: {invalid_sites}."
+            if suggestions:
+                msg += f" Did you mean: {suggestions}?"
+            msg += f" Valid sites: {valid_sites}"
+            return msg
 
         # Call jobdrop scrape_jobs function
         jobs_df = scrape_jobs(
