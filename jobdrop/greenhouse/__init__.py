@@ -109,13 +109,15 @@ class Greenhouse(Scraper):
         query = _build_query(scraper_input)
         log.info(f"Greenhouse: Google query = {query!r}")
 
+        start_offset = max(scraper_input.offset or 0, 0)
+
         # Stage 1: collect greenhouse URLs from Google. Walk extra SERP
         # pages until we have >= wanted unique URLs (or run out).
         try:
-            postings = _run_async(_discover_via_google(query, wanted))
+            postings = _run_async(_discover_via_google(query, wanted, start_offset))
         except RuntimeError as e:
             if "asyncio.run" in str(e) or "running event loop" in str(e):
-                postings = _run_on_thread(_discover_via_google(query, wanted))
+                postings = _run_on_thread(_discover_via_google(query, wanted, start_offset))
             else:
                 raise
         log.info(f"Greenhouse: discovered {len(postings)} unique postings")
@@ -219,10 +221,14 @@ def _build_query(si: ScraperInput) -> str:
     return " ".join(parts)
 
 
-async def _discover_via_google(query: str, wanted: int) -> list[tuple[str, str]]:
+async def _discover_via_google(
+    query: str, wanted: int, start_offset: int = 0,
+) -> list[tuple[str, str]]:
     """Drive headless Chrome through Google SERPs until we have enough URLs.
 
     Returns a list of (board_token, job_id) in result order, deduplicated.
+    `start_offset` shifts the starting SERP position (in result count) so
+    callers can paginate beyond the first page.
     """
     from selenium_driverless import webdriver
 
@@ -238,7 +244,7 @@ async def _discover_via_google(query: str, wanted: int) -> list[tuple[str, str]]
     async with webdriver.Chrome(options=options) as driver:
         # Walk up to 5 SERP pages (~50 results) to satisfy `wanted`.
         for page in range(5):
-            url = _GOOGLE_SEARCH_URL.format(query=encoded, start=page * 10)
+            url = _GOOGLE_SEARCH_URL.format(query=encoded, start=start_offset + page * 10)
             log.info(f"Greenhouse: SERP page {page + 1} → {url[:120]}")
             try:
                 await driver.get(url, wait_load=True, timeout=_NAV_TIMEOUT_S)

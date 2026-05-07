@@ -88,14 +88,15 @@ class Naukri(Scraper):
                 f"Scraping page {request_count} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)} "
                 f"for search term: {scraper_input.search_term}"
             )
+            kw = scraper_input.search_term or ""
             params = {
                 "noOfResults": self.jobs_per_page,
                 "urlType": "search_by_keyword",
                 "searchType": "adv",
-                "keyword": scraper_input.search_term,
+                "keyword": kw,
                 "pageNo": page,
-                "k": scraper_input.search_term,
-                "seoKey": f"{scraper_input.search_term.lower().replace(' ', '-')}-jobs",
+                "k": kw,
+                "seoKey": f"{kw.lower().replace(' ', '-')}-jobs" if kw else "jobs",
                 "src": "jobsearchDesk",
                 "latLong": "",
                 "location": scraper_input.location,

@@ -69,6 +69,9 @@ class TrueUp(Scraper):
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
         wanted = max(scraper_input.results_wanted or 15, 1)
+        start_offset = max(scraper_input.offset or 0, 0)
+        start_page = start_offset // _PER_PAGE
+        first_page_drop = start_offset % _PER_PAGE
 
         sess = cc_requests.Session(impersonate="safari17_2_ios")
 
@@ -90,7 +93,7 @@ class TrueUp(Scraper):
             cutoff_ts = int(time.time()) - scraper_input.hours_old * 3600
             filters.append(f"updated_at_timestamp >= {cutoff_ts}")
 
-        for page_num in range(_MAX_PAGES):
+        for page_num in range(start_page, start_page + _MAX_PAGES):
             params = {
                 "query": query,
                 "hitsPerPage": _PER_PAGE,
@@ -129,6 +132,8 @@ class TrueUp(Scraper):
                 break
 
             hits = j.get("hits") or []
+            if page_num == start_page and first_page_drop:
+                hits = hits[first_page_drop:]
             page_jobs: list[JobPost] = []
             for hit in hits:
                 if not isinstance(hit, dict):

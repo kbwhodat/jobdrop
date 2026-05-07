@@ -102,6 +102,8 @@ class Google(Scraper):
         jobs: list[JobPost] = []
         seen_keys: set[str] = set()
         wanted = getattr(scraper_input, "results_wanted", 25) or 25
+        start_offset = max(getattr(scraper_input, "offset", 0) or 0, 0)
+        fetch_target = start_offset + wanted
         for card in raw_cards:
             post = _build_job_post(card)
             if post is None:
@@ -111,10 +113,11 @@ class Google(Scraper):
                 continue
             seen_keys.add(dedupe_key)
             jobs.append(post)
-            if len(jobs) >= wanted:
+            if len(jobs) >= fetch_target:
                 break
 
-        log.info(f"google: returning {len(jobs)} jobs")
+        jobs = jobs[start_offset:start_offset + wanted]
+        log.info(f"google: returning {len(jobs)} jobs (offset={start_offset})")
         return JobResponse(jobs=jobs)
 
     async def _scrape_async(self, url: str) -> list[dict[str, Any]]:

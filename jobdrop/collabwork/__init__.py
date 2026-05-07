@@ -125,11 +125,19 @@ class CollabWork(Scraper):
 
         jobs: list[JobPost] = []
         seen_ids: set[str] = set()
-        page = 1
+        start_offset = max(scraper_input.offset or 0, 0)
+        start_page = start_offset // _MAX_PAGE_SIZE + 1  # API page is 1-indexed
+        first_page_drop = start_offset % _MAX_PAGE_SIZE
+        page = start_page
         # Defensive cap — at 100/page that's 1500 jobs, well above any
         # reasonable single-call request.
-        while len(jobs) < wanted and page <= 15:
-            page_size = min(_MAX_PAGE_SIZE, max(wanted - len(jobs), 24) + 5)
+        while len(jobs) < wanted and page <= start_page + 14:
+            # On the very first iteration, force the max page size so
+            # `first_page_drop` aligns with what the server returns.
+            if page == start_page and first_page_drop:
+                page_size = _MAX_PAGE_SIZE
+            else:
+                page_size = min(_MAX_PAGE_SIZE, max(wanted - len(jobs), 24) + 5)
             body: dict[str, Any] = {
                 "search_query": scraper_input.search_term or "",
                 "location": api_location,
@@ -164,6 +172,8 @@ class CollabWork(Scraper):
             hits = payload.get("hits") or []
             if not hits:
                 break
+            if page == start_page and first_page_drop:
+                hits = hits[first_page_drop:]
 
             dropped_old = 0
             for raw in hits:

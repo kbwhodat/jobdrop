@@ -100,6 +100,10 @@ class Wellfound(Scraper):
         from camoufox.async_api import AsyncCamoufox
 
         wanted = max(si.results_wanted or 15, 1)
+        start_offset = max(si.offset or 0, 0)
+        # Wellfound's per-page count varies per render; safest correct
+        # approach is to fetch start_offset+wanted total then slice.
+        fetch_target = start_offset + wanted
         hours_old = si.hours_old
         cutoff_ts = (
             datetime.now(timezone.utc).timestamp() - hours_old * 3600
@@ -108,7 +112,10 @@ class Wellfound(Scraper):
         )
 
         base_path = self._base_path(si)
-        log.info(f"wellfound: base path = {base_path!r}, results_wanted={wanted}")
+        log.info(
+            f"wellfound: base path = {base_path!r}, "
+            f"results_wanted={wanted}, offset={start_offset}"
+        )
 
         jobs: list[JobPost] = []
         seen_ids: set[str] = set()
@@ -140,13 +147,12 @@ class Wellfound(Scraper):
                     f"(total {len(jobs)}, has_more={has_more})"
                 )
 
-                if len(jobs) >= wanted:
-                    jobs = jobs[:wanted]
+                if len(jobs) >= fetch_target:
                     break
                 if not has_more:
                     break
 
-        return jobs
+        return jobs[start_offset:start_offset + wanted]
 
     def _base_path(self, si: ScraperInput) -> str:
         role = si.search_term

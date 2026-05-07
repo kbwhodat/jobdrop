@@ -60,7 +60,6 @@ _BASE = "https://hiring.cafe"
 _NEXT_DATA_TIMEOUT_S = 20
 _MAX_PAGES = 5
 _PER_PAGE = 120
-_CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 # Module-level cache — refreshed on 404 (when HC deploys a new build).
 _BUILD_ID: str = "guHPklrF3GXUbbW7723hM"
@@ -81,19 +80,24 @@ class HiringCafe(Scraper):
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
         wanted = max(scraper_input.results_wanted or 15, 1)
+        start_offset = max(scraper_input.offset or 0, 0)
+        start_page = start_offset // _PER_PAGE + 1  # HC `page` is 1-indexed
+        first_page_drop = start_offset % _PER_PAGE
 
         sess = cc_requests.Session(impersonate="safari17_2_ios")
 
         jobs: list[JobPost] = []
         seen_ids: set[str] = set()
 
-        for page_num in range(1, _MAX_PAGES + 1):
+        for page_num in range(start_page, start_page + _MAX_PAGES):
             state = self._build_state(scraper_input, page_num)
             json_data = self._fetch_page(sess, state, page_num)
             if json_data is None:
                 break
 
             page_jobs, has_more = self._parse_json(json_data, scraper_input, seen_ids)
+            if page_num == start_page and first_page_drop:
+                page_jobs = page_jobs[first_page_drop:]
             jobs.extend(page_jobs)
             log.info(
                 f"hiring_cafe: page {page_num} → {len(page_jobs)} new "
@@ -318,7 +322,6 @@ def _refresh_build_id() -> bool:
 
         async def _extract():
             options = webdriver.ChromeOptions()
-            options.binary_location = _CHROME_BIN
             options.add_argument("--no-sandbox")
             options.add_argument("--window-size=1280,900")
             options.add_argument("--window-position=-2400,-2400")

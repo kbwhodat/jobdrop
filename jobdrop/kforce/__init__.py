@@ -97,8 +97,9 @@ class Kforce(Scraper):
 
         jobs: list[JobPost] = []
         seen: set[str] = set()
-        skip = 0
-        while len(jobs) < wanted and skip < 1000:
+        start_offset = scraper_input.offset or 0
+        skip = start_offset
+        while len(jobs) < wanted and skip < start_offset + 1000:
             body: dict[str, Any] = {
                 "search": scraper_input.search_term or "*",
                 "top": min(_PAGE_SIZE, wanted - len(jobs) + 5),

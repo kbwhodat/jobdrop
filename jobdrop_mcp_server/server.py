@@ -254,7 +254,14 @@ async def scrape_jobs_tool(
     search_term: str,
     ctx: Context,
     location: Optional[str] = None,
-    site_name: List[str] = ["indeed", "linkedin", "zip_recruiter", "google"],
+    site_name: List[str] = [
+        "linkedin", "indeed", "glassdoor", "zip_recruiter", "google",
+        "hiring_cafe", "wellfound", "collab_work", "trueup",
+        "greenhouse", "usajobs",
+        "clearance_jobs", "kforce", "insight_global",
+        "adzuna", "jooble", "findwork", "the_muse",
+        "bayt", "naukri", "bdjobs",
+    ],
     results_wanted: int = 15,
     job_type: Optional[str] = None,
     is_remote: bool = False,
@@ -271,7 +278,7 @@ async def scrape_jobs_tool(
     output_format: str = "markdown",
     concise: bool = False,
 ) -> str:
-    """Search 20 job boards in one call. Returns normalized results
+    """Search 21 job boards in one call. Returns normalized results
     (title, company, location, salary, job_type, date_posted) as a
     markdown report or JSON.
 
@@ -289,10 +296,11 @@ async def scrape_jobs_tool(
     )
     ```
 
-    ## Available sites — pick what fits the query
+    ## Available sites — all 21 hit by default
 
-    The default `site_name` is a conservative subset. **For most
-    queries, override it explicitly** to get the right coverage.
+    `site_name` defaults to all 21 sources for max coverage. Override it
+    only when you specifically want to narrow the search (faster /
+    region-specific / niche).
 
     - **Broad mainstream**: `linkedin`, `indeed`, `glassdoor`, `google`,
       `zip_recruiter`
@@ -648,7 +656,7 @@ def get_supported_sites() -> str:
             "bdjobs": "BDJobs — Bangladesh's premier job portal.",
         }
 
-        response = "## 🔗 Supported Job Board Sites (20 total)\n\n"
+        response = "## 🔗 Supported Job Board Sites (21 total)\n\n"
         for site, description in sites_info.items():
             response += f"- **`{site}`**: {description}\n"
 
@@ -690,7 +698,7 @@ def get_job_search_tips() -> str:
 - **State/Country**: "California", "Texas", "United Kingdom"
 - **Multiple locations**: Run separate searches for different cities
 
-### 🏢 **Site Selection Guide** (20 sites total — see `get_supported_sites`)
+### 🏢 **Site Selection Guide** (21 sites total — see `get_supported_sites`)
 - **Start small**: 2-3 sites is plenty for a good query
 - **Best general-purpose**: `hiring_cafe` (~140 AI-tagged jobs/page) + `indeed` (broadest mainstream)
 - **Startup roles**: `wellfound` + `hiring_cafe`

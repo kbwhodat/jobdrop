@@ -1,6 +1,6 @@
 # jobdrop
 
-A multi-source job scraper. Hits 20 job boards in one call, normalizes
+A multi-source job scraper. Hits 21 job boards in one call, normalizes
 the results into a pandas DataFrame, and ships with anti-bot handling
 for the boards that block standard scrapers.
 
