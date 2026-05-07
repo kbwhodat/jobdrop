@@ -26,6 +26,7 @@ from jobdrop.kforce import Kforce
 from jobdrop.linkedin import LinkedIn
 from jobdrop.naukri import Naukri
 from jobdrop.the_muse import TheMuse
+from jobdrop.trueup import TrueUp
 from jobdrop.usajobs import USAJobs
 from jobdrop.wellfound import Wellfound
 from jobdrop.model import JobType, Location, JobResponse, Country
@@ -93,6 +94,7 @@ def scrape_jobs(
         Site.COLLAB_WORK: CollabWork,
         Site.WELLFOUND: Wellfound,
         Site.HIRING_CAFE: HiringCafe,
+        Site.TRUEUP: TrueUp,
     }
     set_logger_level(verbose)
     job_type = get_enum_from_value(job_type) if job_type else None

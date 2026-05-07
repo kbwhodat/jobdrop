@@ -301,6 +301,8 @@ async def scrape_jobs_tool(
     - **Startup jobs** (50k+ AngelList-era startup roles): `wellfound`
     - **Community/newsletter aggregator** (curated, fastest):
       `collab_work`
+    - **Tech-startup curated** (with company-trajectory + valuation +
+      layoff signals): `trueup`
     - **Company-direct** (any Greenhouse-hosted board via Google
       site: dorks): `greenhouse`
     - **Government/federal** (US): `usajobs`
@@ -404,7 +406,7 @@ async def scrape_jobs_tool(
         site_name = [_SITE_ALIASES.get(s.lower().strip(), s) for s in site_name if isinstance(s, str)]
 
         # Validate site names
-        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "bdjobs", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe"]
+        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "bdjobs", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe", "trueup"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
         if invalid_sites:
             # Fuzzy-match suggestions help the model recover on retry instead
@@ -627,6 +629,7 @@ def get_supported_sites() -> str:
             "hiring_cafe": "Hiring Cafe — AI-curated, ~140 jobs/page with rich tags (seniority, comp, skills, workplace_type). Best general-purpose broad search.",
             "wellfound": "Wellfound (formerly AngelList) — 50k+ startup roles.",
             "collab_work": "CollabWork — community/newsletter aggregator, ~2k curated roles, fastest source (~280ms).",
+            "trueup": "TrueUp — tech-startup-focused. Adds company-trajectory score, valuation, funding stage, and layoff/health flags into job description. Direct ATS apply URLs. Pure HTTP, sub-second.",
             # Company-direct + government
             "greenhouse": "Greenhouse — any greenhouse-hosted board (most YC-stage and Series A+ companies). 3-layer staleness filter (404 / past deadline / 90-day age cap).",
             "usajobs": "USAJobs — US federal government roles. Public API.",
