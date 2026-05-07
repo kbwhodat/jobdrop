@@ -307,6 +307,14 @@ async def scrape_jobs_tool(
     try:
         logger.info(f"Starting job search for: {search_term}")
 
+        # Defensive coercion — smaller models commonly pass a single string
+        # where a list is expected. Accept both rather than fail with a
+        # confusing schema error.
+        if isinstance(site_name, str):
+            site_name = [site_name]
+        if isinstance(seniority_level, str):
+            seniority_level = [seniority_level]
+
         # Validate site names
         valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "bdjobs", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
