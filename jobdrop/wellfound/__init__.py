@@ -277,7 +277,11 @@ class Wellfound(Scraper):
         if not job_id or not title:
             return None
 
-        job_url = f"{_BASE}/jobs/{job_id}"
+        # Wellfound's router requires the SEO slug — bare /jobs/{id} returns 404.
+        # Canonical form: /jobs/{id}-{slug}. Slug is always present in the API
+        # response; fall back to bare-id only if somehow empty.
+        slug = (listing.get("slug") or "").strip()
+        job_url = f"{_BASE}/jobs/{job_id}-{slug}" if slug else f"{_BASE}/jobs/{job_id}"
         loc_names = listing.get("locationNames") or []
         location = _build_location(loc_names[0] if loc_names else None)
 
