@@ -1,24 +1,35 @@
-"""Hiring Cafe scraper — AI-enriched job listings via searchState URL filter.
+"""Hiring Cafe scraper — AI-enriched job listings via direct JSON endpoint.
 
-## Why selenium-driverless headed Chrome
+## Headless via curl_cffi
 
-Hiring Cafe is fronted by Cloudflare with a "Just a moment..." JS challenge
-that blocks curl_cffi (all 26 TLS profiles), Camoufox headless, and any
-non-browser HTTP. Real headed Chrome via selenium-driverless passes the
-challenge and gets a valid `cf_clearance` cookie. Same engine we use for
-Glassdoor, Google, and Greenhouse — no new dep.
+The static-data Next.js endpoint `/_next/data/{buildId}/index.json` is
+NOT behind the same Cloudflare challenge that gates the home page. It
+accepts the same `searchState` query param the SPA uses and returns
+the same `pageProps.ssrHits` — server-side filtered.
 
-## URL filter — `?searchState=<URL-encoded JSON>`
+Pure curl_cffi safari17_2_ios → sub-second response, no browser, no
+GUI, no anti-bot battle.
 
-Empirically discovered (May 2026): hitting
-  https://hiring.cafe/?searchState={...}
-returns SSR-rendered ssrHits filtered by the JSON spec. Fields we set:
-  - searchQuery        ← keyword
-  - locations[]        ← structured Google-Places-shaped object
-  - workplaceTypes     ← ["Remote"] / ["Onsite", "Hybrid"] / all
-  - commitmentTypes    ← ["Full Time"] etc., maps from JobType
-  - dateFetchedPastNDays ← from hours_old / 24
-  - sortBy             ← "default"
+## Architecture
+
+  Caller → curl_cffi safari17_2_ios →
+    GET /_next/data/{buildId}/index.json?searchState={url-encoded JSON}
+  → response.pageProps.ssrHits[] → JobPost objects
+
+When HC deploys a new build, buildId changes. We cache the current
+buildId at module level. If a fetch returns 404 (buildId stale), we
+fall back ONCE to a real-browser fetch (the only path that defeats
+CF on the home page) to extract a fresh buildId, update the cache,
+and retry.
+
+## SearchState shape
+
+  - searchQuery: keyword (with location appended as bag-of-words)
+  - workplaceTypes: ["Remote"] / ["Remote","Hybrid","Onsite"]
+  - commitmentTypes: ["Full Time"] etc., maps from JobType
+  - dateFetchedPastNDays: from hours_old / 24
+  - sortBy: "default"
+  - page: 1, 2, 3, ...
 """
 from __future__ import annotations
 
@@ -29,6 +40,8 @@ import threading
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
+
+from curl_cffi import requests as cc_requests
 
 from jobdrop.hiring_cafe.util import log
 from jobdrop.model import (
@@ -44,11 +57,14 @@ from jobdrop.model import (
 )
 
 _BASE = "https://hiring.cafe"
-_NAV_TIMEOUT_S = 30
-_RENDER_SLEEP_S = 8.0
-_PER_PAGE = 120
+_NEXT_DATA_TIMEOUT_S = 20
 _MAX_PAGES = 5
+_PER_PAGE = 120
 _CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+# Module-level cache — refreshed on 404 (when HC deploys a new build).
+_BUILD_ID: str = "guHPklrF3GXUbbW7723hM"
+_BUILD_ID_LOCK = threading.Lock()
 
 
 class HiringCafe(Scraper):
@@ -64,87 +80,77 @@ class HiringCafe(Scraper):
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
+        wanted = max(scraper_input.results_wanted or 15, 1)
 
-        try:
-            from selenium_driverless import webdriver  # noqa: F401
-        except ImportError:
-            log.error(
-                "hiring_cafe: selenium-driverless required. "
-                "Install: pip install selenium-driverless"
-            )
-            return JobResponse(jobs=[])
-
-        try:
-            jobs = asyncio.run(self._scrape_async(scraper_input))
-        except RuntimeError as e:
-            if "asyncio.run" in str(e) or "running event loop" in str(e):
-                log.info("hiring_cafe: nested loop detected; running on dedicated thread")
-                jobs = _run_on_thread(self._scrape_async(scraper_input))
-            else:
-                raise
-
-        log.info(f"hiring_cafe: returning {len(jobs)} jobs")
-        return JobResponse(jobs=jobs)
-
-    async def _scrape_async(self, si: ScraperInput) -> list[JobPost]:
-        from selenium_driverless import webdriver
-
-        wanted = max(si.results_wanted or 15, 1)
-
-        options = webdriver.ChromeOptions()
-        options.binary_location = _CHROME_BIN
-        options.add_argument("--no-sandbox")
-        options.add_argument("--window-size=1280,900")
-        options.add_argument("--window-position=-2400,-2400")
+        sess = cc_requests.Session(impersonate="safari17_2_ios")
 
         jobs: list[JobPost] = []
         seen_ids: set[str] = set()
 
-        async with webdriver.Chrome(options=options) as driver:
+        for page_num in range(1, _MAX_PAGES + 1):
+            state = self._build_state(scraper_input, page_num)
+            json_data = self._fetch_page(sess, state, page_num)
+            if json_data is None:
+                break
+
+            page_jobs, has_more = self._parse_json(json_data, scraper_input, seen_ids)
+            jobs.extend(page_jobs)
+            log.info(
+                f"hiring_cafe: page {page_num} → {len(page_jobs)} new "
+                f"(total {len(jobs)}, has_more={has_more})"
+            )
+
+            if len(jobs) >= wanted:
+                jobs = jobs[:wanted]
+                break
+            if not has_more or len(page_jobs) == 0:
+                break
+
+        log.info(f"hiring_cafe: returning {len(jobs)} jobs")
+        return JobResponse(jobs=jobs)
+
+    def _fetch_page(self, sess, state: dict[str, Any], page_num: int) -> dict | None:
+        """GET /_next/data/{buildId}/index.json — refresh buildId on 404."""
+        encoded = quote(json.dumps(state, separators=(",", ":")))
+        for attempt in range(2):
+            url = f"{_BASE}/_next/data/{_BUILD_ID}/index.json?searchState={encoded}"
             try:
-                await driver.get(_BASE + "/", wait_load=True, timeout=_NAV_TIMEOUT_S)
-                await asyncio.sleep(5)
-            except Exception as e:
-                log.warning(f"hiring_cafe: warm / failed: {e!r}")
-
-            for page_num in range(1, _MAX_PAGES + 1):
-                state = self._build_state(si, page_num)
-                encoded = quote(json.dumps(state, separators=(",", ":")))
-                url = f"{_BASE}/?searchState={encoded}"
-
-                try:
-                    await driver.get(url, wait_load=True, timeout=_NAV_TIMEOUT_S)
-                    await asyncio.sleep(_RENDER_SLEEP_S)
-                    html = await driver.page_source
-                except Exception as e:
-                    log.warning(f"hiring_cafe: page {page_num} fetch failed: {e!r}")
-                    break
-
-                if "just a moment" in html.lower():
-                    log.warning("hiring_cafe: Cloudflare challenge unresolved")
-                    break
-
-                page_jobs, has_more = self._parse_html(html, si, seen_ids)
-                jobs.extend(page_jobs)
-                log.info(
-                    f"hiring_cafe: page {page_num} → {len(page_jobs)} new "
-                    f"(total {len(jobs)}, has_more={has_more})"
+                r = sess.get(
+                    url,
+                    timeout=_NEXT_DATA_TIMEOUT_S,
+                    headers={"x-nextjs-data": "1", "Accept": "*/*"},
                 )
+            except Exception as e:
+                log.warning(f"hiring_cafe: page {page_num} fetch error: {e!r}")
+                return None
 
-                if len(jobs) >= wanted:
-                    jobs = jobs[:wanted]
-                    break
-                if not has_more or len(page_jobs) == 0:
-                    break
+            if r.status_code == 200:
+                try:
+                    return r.json()
+                except Exception as e:
+                    log.warning(f"hiring_cafe: page {page_num} JSON parse error: {e!r}")
+                    return None
 
-        return jobs
+            if r.status_code == 404 and attempt == 0:
+                log.info(f"hiring_cafe: buildId {_BUILD_ID!r} stale, refreshing...")
+                if _refresh_build_id():
+                    log.info(f"hiring_cafe: buildId refreshed → {_BUILD_ID!r}")
+                    continue
+                log.warning("hiring_cafe: buildId refresh failed; aborting")
+                return None
+
+            log.warning(
+                f"hiring_cafe: page {page_num} got HTTP {r.status_code} "
+                f"({len(r.text)} bytes); aborting"
+            )
+            return None
+        return None
 
     def _build_state(self, si: ScraperInput, page: int) -> dict[str, Any]:
-        # Hiring Cafe's locations[] filter requires a Google-Places object with
-        # lat/lon + address_components. Without geocoding we just append the
-        # raw location string to searchQuery — HC's AI search treats it as a
-        # bag-of-words. The "in {location}" syntax breaks AI search; bare
-        # concatenation is safer (just words to match).
+        # Hiring Cafe's locations[] filter requires a Google-Places object
+        # with lat/lon + address_components. Without geocoding we just
+        # append the raw location string to searchQuery — HC's AI search
+        # treats it as a bag of words. Bare concat is safer than "in {location}".
         query_parts: list[str] = []
         if si.search_term:
             query_parts.append(si.search_term)
@@ -185,28 +191,15 @@ class HiringCafe(Scraper):
 
         return state
 
-    def _parse_html(
+    def _parse_json(
         self,
-        html: str,
+        nd_response: dict,
         si: ScraperInput,
         seen_ids: set[str],
     ) -> tuple[list[JobPost], bool]:
-        m = re.search(
-            r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S
-        )
-        if not m:
-            log.warning("hiring_cafe: __NEXT_DATA__ missing — page shape changed")
-            return [], False
-
         try:
-            nd = json.loads(m.group(1))
-        except Exception as e:
-            log.warning(f"hiring_cafe: __NEXT_DATA__ parse error: {e!r}")
-            return [], False
-
-        try:
-            pp = nd["props"]["pageProps"]
-        except (KeyError, TypeError):
+            pp = nd_response.get("pageProps", {}) or {}
+        except Exception:
             return [], False
 
         ssr = pp.get("ssrHits") or pp.get("results") or pp.get("hits") or []
@@ -262,7 +255,6 @@ class HiringCafe(Scraper):
                 date_posted = None
 
         compensation = _build_compensation(v5)
-
         commitment_list = v5.get("commitment") or []
         job_type_list = _map_commitment(commitment_list)
 
@@ -289,7 +281,90 @@ class HiringCafe(Scraper):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Helpers
+# BuildId refresh — fallback only, fires on 404 from cached buildId
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _refresh_build_id() -> bool:
+    """Lazy fallback: launch headed Chrome ONCE to extract fresh buildId from
+    Hiring Cafe's home page (CF-protected; only headed real Chrome passes).
+
+    Updates module-level `_BUILD_ID`. Returns True on success.
+    Only fires when /_next/data returns 404 (HC deployed new build).
+    """
+    global _BUILD_ID
+
+    with _BUILD_ID_LOCK:
+        # Double-check pattern: another thread may have refreshed already
+        try:
+            sess = cc_requests.Session(impersonate="safari17_2_ios")
+            r = sess.get(
+                f"{_BASE}/_next/data/{_BUILD_ID}/index.json",
+                timeout=10,
+                headers={"x-nextjs-data": "1"},
+            )
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+
+        try:
+            from selenium_driverless import webdriver
+        except ImportError:
+            log.warning(
+                "hiring_cafe: selenium-driverless not installed — cannot refresh buildId"
+            )
+            return False
+
+        async def _extract():
+            options = webdriver.ChromeOptions()
+            options.binary_location = _CHROME_BIN
+            options.add_argument("--no-sandbox")
+            options.add_argument("--window-size=1280,900")
+            options.add_argument("--window-position=-2400,-2400")
+            async with webdriver.Chrome(options=options) as driver:
+                await driver.get(_BASE + "/", wait_load=True, timeout=30)
+                await asyncio.sleep(5)
+                html = await driver.page_source
+                m = re.search(r'"buildId"\s*:\s*"([^"]+)"', html)
+                return m.group(1) if m else None
+
+        try:
+            new_id = _run_async(_extract())
+            if new_id and new_id != _BUILD_ID:
+                _BUILD_ID = new_id
+                return True
+            return False
+        except Exception as e:
+            log.warning(f"hiring_cafe: headed buildId-refresh failed: {e!r}")
+            return False
+
+
+def _run_async(coro):
+    """Run an awaitable from sync code, even if a loop is already running."""
+    try:
+        return asyncio.run(coro)
+    except RuntimeError as e:
+        if "asyncio.run" not in str(e) and "running event loop" not in str(e):
+            raise
+        result_box: dict[str, Any] = {}
+
+        def runner():
+            try:
+                result_box["ok"] = asyncio.run(coro)
+            except BaseException as exc:  # noqa: BLE001
+                result_box["err"] = exc
+
+        t = threading.Thread(target=runner, daemon=True)
+        t.start()
+        t.join()
+        if "err" in result_box:
+            raise result_box["err"]
+        return result_box.get("ok")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Helpers (unchanged from prior version)
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -376,21 +451,3 @@ def _map_commitment(commitment_list: list[str]) -> list[JobType] | None:
         if jt and jt not in out:
             out.append(jt)
     return out or None
-
-
-def _run_on_thread(coro):
-    """Execute an awaitable from sync code that's inside a running loop."""
-    result_box: dict[str, Any] = {}
-
-    def runner():
-        try:
-            result_box["ok"] = asyncio.run(coro)
-        except BaseException as e:  # noqa: BLE001
-            result_box["err"] = e
-
-    t = threading.Thread(target=runner, daemon=True)
-    t.start()
-    t.join()
-    if "err" in result_box:
-        raise result_box["err"]
-    return result_box.get("ok")
