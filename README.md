@@ -33,21 +33,6 @@ for the boards that block standard scrapers.
 | `clearance_jobs` | ClearanceJobs (DHI) | Security-cleared roles, full JD + salary + structured job_type |
 | `kforce` | Kforce staffing | Direct backend API for fast results |
 
-### Quality + reliability tightening
-
-- **LinkedIn** — salary extraction from description body, optional per-company cap, parallel detail fetches.
-- **Indeed** — `radius` GraphQL fix, per-company cap to surface diverse employers, pagination loop hardened.
-- **ClearanceJobs** — parallel detail-page fetch so you get full JD, salary range, structured `job_type`, authoritative `remote` bool (vs the API's 200-char preview alone).
-- **Greenhouse** — three layers of stale-protection (404 drop / past application deadline / first-published age with a 90-day default that respects `hours_old`).
-- **Wellfound + Hiring Cafe** — added with anti-bot handling that defeats the strictest CDN/WAF tiers in the catalog.
-
-### Bundled credentials
-
-API keys for USAJobs, Adzuna, Jooble, Findwork, and The Muse are baked
-into a positional resolver (`jobdrop/_defaults.py`) so the new sources
-work without environment setup. User-set env vars still win via
-`setdefault` semantics.
-
 ## Installation
 
 ### As a Python library
@@ -58,7 +43,7 @@ pip install -U jobdrop
 
 Python ≥ 3.10 required.
 
-### As an MCP server (Claude Desktop / Claude Code / Cursor / Cline)
+### As an MCP server (Claude Desktop / Claude Code / Cursor / Cline / opencode)
 
 Install the binary once with `uv tool install` (or `pipx install`):
 
@@ -67,7 +52,9 @@ uv tool install "jobdrop[mcp]"
 # or:  pipx install "jobdrop[mcp]"
 ```
 
-Then add to your MCP client config — e.g. `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Then add to your MCP client config.
+
+**Claude Desktop / Claude Code / Cursor / Cline** — `~/Library/Application Support/Claude/claude_desktop_config.json` (or equivalent):
 
 ```json
 {
@@ -79,7 +66,21 @@ Then add to your MCP client config — e.g. `~/Library/Application Support/Claud
 }
 ```
 
-That's it — the client launches `jobdrop-mcp-server` as a stdio subprocess on demand. No daemon, no port, no nix.
+**opencode** — `~/.config/opencode/opencode.json` (or `.opencode/opencode.json` in your project):
+
+```json
+{
+  "mcp": {
+    "jobdrop": {
+      "type": "local",
+      "command": ["jobdrop-mcp-server"],
+      "enabled": true
+    }
+  }
+}
+```
+
+That's it — the client launches `jobdrop-mcp-server` as a stdio subprocess on demand. No daemon, no port.
 
 > **Note**: prefer the `uv tool install` path so the binary lands in PATH and the client launches it directly — same pattern as reference MCP servers (filesystem, git, etc.).
 
