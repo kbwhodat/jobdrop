@@ -106,14 +106,14 @@ print(jobs[["site", "title", "company", "location", "min_amount", "max_amount", 
 
 ```
 scrape_jobs(
-  site_name              list[str] | str — any of the 17 sources above (default: all)
+  site_name              list[str] | str — any of the 20 sources above (default: all)
   search_term            str        — keyword query
   google_search_term     str        — Google Jobs override (only filter for `google`)
   location               str        — "City, ST" or ZIP. Each scraper geocodes its own way.
   distance               int        — radius miles, default 50
   is_remote              bool       — remote-only filter (where supported)
   job_type               str        — "fulltime" | "parttime" | "contract" | "internship"
-  easy_apply             bool       — direct-board apply only (LinkedIn easy-apply is broken)
+  easy_apply             bool       — direct-board apply only (where supported)
   results_wanted         int        — per-site target
   offset                 int        — pagination offset
   hours_old              int        — drop postings older than N hours
