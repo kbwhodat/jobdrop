@@ -114,6 +114,7 @@ def _format_jobs_json(
     site_name: List[str],
     offset: int,
     results_wanted: int,
+    concise: bool = False,
 ) -> str:
     """Serialize results as a structured JSON string for agent consumption."""
     jobs_list = []
@@ -133,12 +134,14 @@ def _format_jobs_json(
                 "currency": _safe(job.get("currency")),
                 "interval": _safe(job.get("interval")),
             } if pd.notna(job.get("min_amount")) or pd.notna(job.get("max_amount")) else None,
-            "description": _safe(job.get("description")),
-            "company_industry": _safe(job.get("company_industry")),
-            "job_level": _safe(job.get("job_level")),
-            "skills": _safe(job.get("skills")),
-            "experience_range": _safe(job.get("experience_range")),
         }
+        # Verbose-only fields (omitted in concise mode)
+        if not concise:
+            job_dict["description"] = _safe(job.get("description"))
+            job_dict["company_industry"] = _safe(job.get("company_industry"))
+            job_dict["job_level"] = _safe(job.get("job_level"))
+            job_dict["skills"] = _safe(job.get("skills"))
+            job_dict["experience_range"] = _safe(job.get("experience_range"))
         # Drop null values for compactness
         job_dict = {k: v for k, v in job_dict.items() if v is not None}
         jobs_list.append(job_dict)
@@ -207,10 +210,25 @@ async def scrape_jobs_tool(
     max_salary: Optional[int] = None,
     seniority_level: Optional[List[str]] = None,
     output_format: str = "markdown",
+    concise: bool = False,
 ) -> str:
     """Search 20 job boards in one call. Returns normalized results
     (title, company, location, salary, job_type, date_posted) as a
-    markdown report.
+    markdown report or JSON.
+
+    ## Quick start
+
+    ```
+    scrape_jobs_tool(
+        search_term="senior python engineer",
+        location="New York, NY",
+        site_name=["hiring_cafe", "indeed"],
+        results_wanted=10,
+        min_salary=180000,
+        seniority_level=["senior", "staff"],
+        output_format="json",
+    )
+    ```
 
     ## Available sites — pick what fits the query
 
@@ -275,6 +293,11 @@ async def scrape_jobs_tool(
         output_format: "markdown" (default, human-readable) or "json"
             (structured `{jobs:[...], summary:{...}, pagination:{...}}`,
             recommended for agent/automation use).
+        concise: True drops description previews, industry, job_level,
+            skills, experience_range, company_rating, and emoji from
+            the output. Saves ~70% of output tokens — recommended for
+            agents with smaller context windows. Same job results are
+            returned (only the formatting changes); no filtering effect.
 
     Returns:
         Markdown report (default) or JSON string (when output_format
@@ -340,10 +363,12 @@ async def scrape_jobs_tool(
                 site_name=site_name,
                 offset=offset,
                 results_wanted=results_wanted,
+                concise=concise,
             )
 
         # Format results (markdown — default)
-        results_summary = f"🎯 Found {len(jobs_df)} jobs for '{search_term}'"
+        prefix = "" if concise else "🎯 "
+        results_summary = f"{prefix}Found {len(jobs_df)} jobs for '{search_term}'"
         if location:
             results_summary += f" in {location}"
         
@@ -374,44 +399,45 @@ async def scrape_jobs_tool(
             
             # Remote work
             if job.get('is_remote'):
-                job_info.append("🏠 **Remote work available**")
-            
+                marker = "**Remote**" if concise else "🏠 **Remote work available**"
+                job_info.append(marker)
+
             # Job URL
             if pd.notna(job.get('job_url')):
                 job_info.append(f"**Apply:** {job.get('job_url')}")
-            
-            # Description preview
-            if pd.notna(job.get('description')):
-                desc = str(job.get('description'))
-                # Limit description to 300 characters for readability
-                if len(desc) > 300:
-                    desc = desc[:300] + "..."
-                job_info.append(f"**Description:** {desc}")
-            
-            # Additional fields for specific sites
-            if pd.notna(job.get('company_industry')):
-                job_info.append(f"**Industry:** {job.get('company_industry')}")
-            
-            if pd.notna(job.get('job_level')):
-                job_info.append(f"**Level:** {job.get('job_level')}")
-            
-            # Naukri-specific fields
-            if pd.notna(job.get('skills')):
-                job_info.append(f"**Skills:** {job.get('skills')}")
-            
-            if pd.notna(job.get('experience_range')):
-                job_info.append(f"**Experience:** {job.get('experience_range')}")
-            
-            if pd.notna(job.get('company_rating')):
-                job_info.append(f"**Company Rating:** {job.get('company_rating')}/5")
-            
+
+            # Verbose-only fields (skipped in concise mode for ~70% token reduction)
+            if not concise:
+                # Description preview
+                if pd.notna(job.get('description')):
+                    desc = str(job.get('description'))
+                    if len(desc) > 300:
+                        desc = desc[:300] + "..."
+                    job_info.append(f"**Description:** {desc}")
+
+                if pd.notna(job.get('company_industry')):
+                    job_info.append(f"**Industry:** {job.get('company_industry')}")
+
+                if pd.notna(job.get('job_level')):
+                    job_info.append(f"**Level:** {job.get('job_level')}")
+
+                if pd.notna(job.get('skills')):
+                    job_info.append(f"**Skills:** {job.get('skills')}")
+
+                if pd.notna(job.get('experience_range')):
+                    job_info.append(f"**Experience:** {job.get('experience_range')}")
+
+                if pd.notna(job.get('company_rating')):
+                    job_info.append(f"**Company Rating:** {job.get('company_rating')}/5")
+
             job_listings.append("\n".join(job_info))
         
         # Combine everything
         full_response = f"{results_summary}\n\n" + "\n\n---\n\n".join(job_listings)
         
         # Add summary statistics
-        full_response += f"\n\n---\n\n## 📊 Search Summary\n"
+        summary_marker = "## Search Summary" if concise else "## 📊 Search Summary"
+        full_response += f"\n\n---\n\n{summary_marker}\n"
         full_response += f"- **Total jobs found:** {len(jobs_df)}\n"
         full_response += f"- **Sites searched:** {', '.join(site_name)}\n"
         full_response += f"- **Remote jobs:** {len(jobs_df[jobs_df.get('is_remote', False) == True])}\n"
@@ -426,8 +452,9 @@ async def scrape_jobs_tool(
 
         # Pagination hint — agents commonly fail to paginate without explicit guidance
         next_offset = offset + max(len(jobs_df), results_wanted)
+        hint_marker = "**More results?**" if concise else "💡 **More results?**"
         full_response += (
-            f"\n💡 **More results?** Call again with `offset={next_offset}` "
+            f"\n{hint_marker} Call again with `offset={next_offset}` "
             f"(currently at offset={offset}, returned {len(jobs_df)} jobs).\n"
         )
 
@@ -486,20 +513,20 @@ def get_supported_sites() -> str:
             # Broad mainstream
             "linkedin": "LinkedIn — professional network. High-quality listings, strict rate limits. Set linkedin_fetch_description=true for full JDs (slower).",
             "indeed": "Indeed — global aggregator. Most reliable + highest volume. Best general-purpose source.",
-            "glassdoor": "Glassdoor — listings + company reviews + salary data. selenium-driverless used to defeat Cloudflare.",
-            "zip_recruiter": "ZipRecruiter — US/Canada-focused. curl_cffi safari17_2_ios TLS impersonation.",
-            "google": "Google Jobs — SERP `udm=8` aggregation. Use very specific search terms.",
+            "glassdoor": "Glassdoor — listings + company reviews + salary data.",
+            "zip_recruiter": "ZipRecruiter — US/Canada-focused.",
+            "google": "Google Jobs — SERP aggregation. Use very specific search terms.",
             # AI-enriched + curated
-            "hiring_cafe": "Hiring Cafe — AI-curated, ~140 jobs/page with rich tags (seniority, comp, skills, workplace_type). Best general-purpose broad search. selenium-driverless to defeat Cloudflare.",
-            "wellfound": "Wellfound (formerly AngelList) — 50k+ startup roles. Camoufox engine to defeat DataDome on /role/* per-route block.",
+            "hiring_cafe": "Hiring Cafe — AI-curated, ~140 jobs/page with rich tags (seniority, comp, skills, workplace_type). Best general-purpose broad search.",
+            "wellfound": "Wellfound (formerly AngelList) — 50k+ startup roles.",
             "collab_work": "CollabWork — community/newsletter aggregator, ~2k curated roles, fastest source (~280ms).",
             # Company-direct + government
-            "greenhouse": "Greenhouse — any greenhouse-hosted board (most YC-stage and Series A+ companies). Google site: dorks via selenium-driverless. 3-layer staleness filter (404 / past deadline / 90-day age cap).",
+            "greenhouse": "Greenhouse — any greenhouse-hosted board (most YC-stage and Series A+ companies). 3-layer staleness filter (404 / past deadline / 90-day age cap).",
             "usajobs": "USAJobs — US federal government roles. Public API.",
             # Staffing
-            "clearance_jobs": "ClearanceJobs (DHI) — security-cleared roles. JSON API + parallel detail-page enrichment.",
-            "kforce": "Kforce — staffing agency. Direct Azure Cognitive Search calls (bypasses Imperva on the public host).",
-            "insight_global": "Insight Global — staffing agency. Server-rendered HTML with hidden JSON blob per result.",
+            "clearance_jobs": "ClearanceJobs (DHI) — security-cleared roles. Full JD, salary, structured job_type.",
+            "kforce": "Kforce — staffing agency. Fast direct backend.",
+            "insight_global": "Insight Global — staffing agency. Server-rendered listings.",
             # Free aggregator APIs
             "adzuna": "Adzuna — free aggregator API, 100% salary fill rate (predicted when missing).",
             "jooble": "Jooble — free aggregator API, 60+ countries.",

@@ -1,47 +1,45 @@
 # jobdrop
 
 A multi-source job scraper. Hits 20 job boards in one call, normalizes
-the results into a pandas DataFrame, and ships with anti-bot bypasses
+the results into a pandas DataFrame, and ships with anti-bot handling
 for the boards that block standard scrapers.
+
+> **Maintainer**: this project is maintained by **[kbwhodat](https://github.com/kbwhodat)**. Substantially extended from the original [`cullenwatson/JobSpy`](https://github.com/cullenwatson/JobSpy) (MIT licensed) with new sources, an integrated MCP server, salary/seniority filters, and reliability fixes across all scrapers.
 
 ## What's in here
 
-### 17 sources
+### 20 sources
 
-| `site_name` | Source | Mechanism |
+| `site_name` | Source | Notes |
 |---|---|---|
-| `linkedin` | LinkedIn | Public listing scrape with optional detail-page enrichment |
-| `indeed` | Indeed | GraphQL with the `Int!` radius fix + per-company cap + paginate-until-quota |
-| `glassdoor` | Glassdoor | selenium-driverless headless to defeat Cloudflare 403; in-page GraphQL fetch |
-| `google` | Google Jobs | selenium-driverless headless against `udm=8`; SERP DOM walk |
-| `zip_recruiter` | ZipRecruiter | `curl_cffi` + `safari17_2_ios` TLS impersonation against the web HTML endpoint |
-| `bayt` | Bayt | Public scrape |
-| `naukri` | Naukri | Public scrape |
-| `bdjobs` | BDJobs | Public scrape |
-| `usajobs` | USAJobs.gov | Federal public API |
-| `adzuna` | Adzuna | Public API |
-| `jooble` | Jooble | Public API |
-| `findwork` | Findwork.dev | Public API |
-| `the_muse` | The Muse | Public API |
-| `insight_global` | Insight Global staffing | Server-rendered HTML scrape with hidden JSON blob per result |
-| `clearance_jobs` | ClearanceJobs (DHI) | Public JSON API + parallel detail-page enrichment for full JD, salary, type, remote bool |
-| `kforce` | Kforce staffing | Direct Azure Cognitive Search calls (bypasses Imperva on the public host) |
-| `greenhouse` | Greenhouse-hosted boards | Google `site:` dorks via selenium-driverless → public Greenhouse API; 3-layer staleness filter |
+| `linkedin` | LinkedIn | Public listings + optional detail-page enrichment |
+| `indeed` | Indeed | GraphQL with per-company cap + paginate-until-quota |
+| `glassdoor` | Glassdoor | Listings + company reviews + salary data |
+| `google` | Google Jobs | SERP aggregation across many sources |
+| `zip_recruiter` | ZipRecruiter | US/Canada-focused |
+| `hiring_cafe` | Hiring Cafe | AI-curated, ~140 jobs/page with rich tags (seniority, comp, skills, workplace_type) |
+| `wellfound` | Wellfound (formerly AngelList) | 50k+ startup roles |
+| `collab_work` | CollabWork | Community/newsletter aggregator (~2k curated roles, fastest source) |
+| `greenhouse` | Greenhouse-hosted boards | Most YC and Series A+ companies; 3-layer staleness filter |
+| `bayt` | Bayt | Middle East focused |
+| `naukri` | Naukri | India's largest job portal |
+| `bdjobs` | BDJobs | Bangladesh's premier job portal |
+| `usajobs` | USAJobs.gov | US federal public API |
+| `adzuna` | Adzuna | Public API, 100% salary fill rate |
+| `jooble` | Jooble | Public API, 60+ countries |
+| `findwork` | Findwork.dev | Developer-focused public API |
+| `the_muse` | The Muse | Culture-forward public API |
+| `insight_global` | Insight Global staffing | Server-rendered listings |
+| `clearance_jobs` | ClearanceJobs (DHI) | Security-cleared roles, full JD + salary + structured job_type |
+| `kforce` | Kforce staffing | Direct backend API for fast results |
 
-### Anti-bot solved
-
-- **Google** — selenium-driverless cold-start headless. Defeats the 2026 CAPTCHA wall that takes out Playwright / undetected-chromedriver / nodriver / patchright.
-- **Glassdoor** — selenium-driverless rewrite to bypass Cloudflare 403; URL-encoded location, partial-GraphQL-error tolerance.
-- **ZipRecruiter** — `curl_cffi` + `safari17_2_ios` against the web HTML endpoint. The iOS-app API is dead behind Cloudflare.
-- **Kforce** — bypasses Imperva on the public host by calling the Azure Cognitive Search backend directly.
-- **Greenhouse** — uses the same selenium-driverless infrastructure as Google for `site:` dorks across all greenhouse-hosted boards.
-
-### Other tightening
+### Quality + reliability tightening
 
 - **LinkedIn** — salary extraction from description body, optional per-company cap, parallel detail fetches.
-- **Indeed** — fixed `radius=25` default after Indeed promoted the GraphQL field to `Int!`; per-company cap to surface diverse employers; pagination loop fixed.
-- **ClearanceJobs** — search API gives a 200-char preview; this fork parallel-fetches `/api/v1/jobs/{id}` so you get the full JD, salary range, structured `job_type`, and authoritative `remote` bool.
-- **Greenhouse** — three layers of stale-protection (404 drop / past `application_deadline` / `first_published` age with 90-day default that respects `hours_old`).
+- **Indeed** — `radius` GraphQL fix, per-company cap to surface diverse employers, pagination loop hardened.
+- **ClearanceJobs** — parallel detail-page fetch so you get full JD, salary range, structured `job_type`, authoritative `remote` bool (vs the API's 200-char preview alone).
+- **Greenhouse** — three layers of stale-protection (404 drop / past application deadline / first-published age with a 90-day default that respects `hours_old`).
+- **Wellfound + Hiring Cafe** — added with anti-bot handling that defeats the strictest CDN/WAF tiers in the catalog.
 
 ### Bundled credentials
 
@@ -83,7 +81,7 @@ Then add to your MCP client config — e.g. `~/Library/Application Support/Claud
 
 That's it — the client launches `jobdrop-mcp-server` as a stdio subprocess on demand. No daemon, no port, no nix.
 
-> **Note**: prefer the `uv tool install` path over `uvx --from "jobdrop[mcp]" jobdrop-mcp-server` in MCP configs. The direct-binary pattern matches what the working reference MCP servers (filesystem, git, etc.) use, and avoids subtle stdio-handoff issues that can occur with the uvx wrapper.
+> **Note**: prefer the `uv tool install` path so the binary lands in PATH and the client launches it directly — same pattern as reference MCP servers (filesystem, git, etc.).
 
 ## Usage
 
