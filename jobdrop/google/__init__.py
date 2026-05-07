@@ -58,6 +58,15 @@ _GOOGLE_JOBS_URL = "https://www.google.com/search?q={query}&udm=8"
 _NAV_TIMEOUT_S = 30
 _RENDER_SLEEP_S = 4.0
 
+# macOS Chrome UA on every machine — Google sees fewer challenges from
+# Mac desktop fingerprints than from Linux, regardless of the actual
+# host OS. Override per-call via the `user_agent` kwarg if needed.
+_DEFAULT_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36"
+)
+
 
 class Google(Scraper):
     def __init__(
@@ -69,7 +78,7 @@ class Google(Scraper):
         super().__init__(Site.GOOGLE, proxies=proxies, ca_cert=ca_cert)
         self.scraper_input: ScraperInput | None = None
         self.country: Country | None = None
-        self.user_agent = user_agent  # accepted for API compat; unused
+        self.user_agent = user_agent or _DEFAULT_UA
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
@@ -127,6 +136,8 @@ class Google(Scraper):
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--window-size=1280,900")
+        if self.user_agent:
+            options.add_argument(f"--user-agent={self.user_agent}")
 
         async with webdriver.Chrome(options=options) as driver:
             await driver.get(url, wait_load=True, timeout=_NAV_TIMEOUT_S)

@@ -74,6 +74,15 @@ _RENDER_SLEEP_S = 3.0
 _API_TIMEOUT_S = 20
 _API_WORKERS = 8
 
+# macOS Chrome UA on every machine — Google sees fewer challenges from
+# Mac desktop fingerprints than from Linux, regardless of the actual
+# host OS. Override per-call via the `user_agent` kwarg if needed.
+_DEFAULT_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/130.0.0.0 Safari/537.36"
+)
+
 # Default freshness ceiling when caller doesn't pass hours_old. Greenhouse
 # search results pulled via Google can include postings 1.5+ years old —
 # Google indexes them and the company hasn't taken them down yet, so the
@@ -92,6 +101,7 @@ class Greenhouse(Scraper):
     ):
         super().__init__(Site.GREENHOUSE, proxies=proxies, ca_cert=ca_cert)
         self.scraper_input: ScraperInput | None = None
+        self.user_agent = user_agent or _DEFAULT_UA
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
@@ -114,10 +124,14 @@ class Greenhouse(Scraper):
         # Stage 1: collect greenhouse URLs from Google. Walk extra SERP
         # pages until we have >= wanted unique URLs (or run out).
         try:
-            postings = _run_async(_discover_via_google(query, wanted, start_offset))
+            postings = _run_async(
+                _discover_via_google(query, wanted, start_offset, self.user_agent)
+            )
         except RuntimeError as e:
             if "asyncio.run" in str(e) or "running event loop" in str(e):
-                postings = _run_on_thread(_discover_via_google(query, wanted, start_offset))
+                postings = _run_on_thread(
+                    _discover_via_google(query, wanted, start_offset, self.user_agent)
+                )
             else:
                 raise
         log.info(f"Greenhouse: discovered {len(postings)} unique postings")
@@ -223,12 +237,15 @@ def _build_query(si: ScraperInput) -> str:
 
 async def _discover_via_google(
     query: str, wanted: int, start_offset: int = 0,
+    user_agent: str | None = None,
 ) -> list[tuple[str, str]]:
     """Drive headless Chrome through Google SERPs until we have enough URLs.
 
     Returns a list of (board_token, job_id) in result order, deduplicated.
     `start_offset` shifts the starting SERP position (in result count) so
-    callers can paginate beyond the first page.
+    callers can paginate beyond the first page. `user_agent` overrides the
+    default Chrome UA — useful for matching the host's native browser
+    fingerprint when Google challenges with /sorry/ CAPTCHA.
     """
     from selenium_driverless import webdriver
 
@@ -236,6 +253,8 @@ async def _discover_via_google(
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--window-size=1280,900")
+    if user_agent:
+        options.add_argument(f"--user-agent={user_agent}")
 
     seen: set[tuple[str, str]] = set()
     ordered: list[tuple[str, str]] = []
