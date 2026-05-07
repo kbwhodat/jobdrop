@@ -8,7 +8,7 @@ for the boards that block standard scrapers.
 
 ## What's in here
 
-### 20 sources
+### 21 sources
 
 | `site_name` | Source | Notes |
 |---|---|---|
@@ -20,6 +20,7 @@ for the boards that block standard scrapers.
 | `hiring_cafe` | Hiring Cafe | AI-curated, ~140 jobs/page with rich tags (seniority, comp, skills, workplace_type) |
 | `wellfound` | Wellfound (formerly AngelList) | 50k+ startup roles |
 | `collab_work` | CollabWork | Community/newsletter aggregator (~2k curated roles, fastest source) |
+| `trueup` | TrueUp | Tech-startup curated. Adds company-trajectory score, valuation, funding stage, layoff/health flags. Pure HTTP, sub-second |
 | `greenhouse` | Greenhouse-hosted boards | Most YC and Series A+ companies; 3-layer staleness filter |
 | `bayt` | Bayt | Middle East focused |
 | `naukri` | Naukri | India's largest job portal |
@@ -106,7 +107,7 @@ print(jobs[["site", "title", "company", "location", "min_amount", "max_amount", 
 
 ```
 scrape_jobs(
-  site_name              list[str] | str — any of the 20 sources above (default: all)
+  site_name              list[str] | str — any of the 21 sources above (default: all)
   search_term            str        — keyword query
   google_search_term     str        — Google Jobs override (only filter for `google`)
   location               str        — "City, ST" or ZIP. Each scraper geocodes its own way.
