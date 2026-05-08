@@ -309,6 +309,9 @@ class Site(Enum):
     ASHBY = "ashby"
     WORKDAY = "workday"
     LEVER = "lever"
+    REMOTEOK = "remoteok"
+    WEWORKREMOTELY = "weworkremotely"
+    GOVERNMENTJOBS = "governmentjobs"
 
 
 class SalarySource(Enum):
