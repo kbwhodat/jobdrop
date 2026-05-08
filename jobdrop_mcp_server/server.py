@@ -221,11 +221,24 @@ def _format_jobs_json(
         jobs_list.append(job_dict)
 
     salary_jobs = jobs_df[pd.notna(jobs_df.get("min_amount", pd.Series(dtype=float)))]
+
+    # Per-source telemetry (count, error, timing_ms) attached by jobdrop.
+    per_source = jobs_df.attrs.get("per_source", {}) if hasattr(jobs_df, "attrs") else {}
+    errors = {s: stats["error"] for s, stats in per_source.items() if stats.get("error")}
+    counts = {s: stats["count"] for s, stats in per_source.items()}
+    sources_with_data = sorted(s for s, c in counts.items() if c > 0)
+    sources_empty = sorted(s for s, c in counts.items() if c == 0 and s not in errors)
+
     summary = {
         "total_returned": len(jobs_list),
         "search_term": search_term,
         "location": location,
         "sites_searched": list(site_name),
+        "sources_with_data": sources_with_data,
+        "sources_empty": sources_empty,
+        "per_source_count": counts,
+        "errors": errors,
+        "total_timing_ms": jobs_df.attrs.get("total_timing_ms") if hasattr(jobs_df, "attrs") else None,
         "remote_count": int((jobs_df.get("is_remote", pd.Series(dtype=bool)) == True).sum()),
         "salary_known_count": len(salary_jobs),
     }
@@ -295,99 +308,43 @@ async def scrape_jobs_tool(
     output_format: str = "markdown",
     concise: bool = False,
 ) -> str:
-    """Search 26 job boards in one call. Returns normalized results
-    (title, company, location, salary, job_type, date_posted) as a
-    markdown report or JSON.
+    """Search 26 job boards in one call. By default hits ALL 26 sources
+    in parallel and returns normalized results.
 
-    ## Quick start
+    Quick example:
+        search_term="senior python engineer", location="Atlanta, GA",
+        results_wanted=15, output_format="json"
 
-    ```
-    scrape_jobs_tool(
-        search_term="senior python engineer",
-        location="New York, NY",
-        site_name=["hiring_cafe", "indeed"],
-        results_wanted=10,
-        min_salary=180000,
-        seniority_level=["senior", "staff"],
-        output_format="json",
-    )
-    ```
-
-    ## Available sites — all 26 hit by default
-
-    `site_name` defaults to all 26 sources for max coverage. Override it
-    only when you specifically want to narrow the search (faster /
-    region-specific / niche).
-
-    - **Broad mainstream**: `linkedin`, `indeed`, `glassdoor`, `google`,
-      `zip_recruiter`
-    - **AI-curated broad** (best general-purpose, ~140 jobs/page,
-      AI-tagged with seniority/comp/skills): `hiring_cafe`
-    - **Startup jobs** (50k+ AngelList-era startup roles): `wellfound`
-    - **Community/newsletter aggregator** (curated, fastest):
-      `collab_work`
-    - **Tech-startup curated** (with company-trajectory + valuation +
-      layoff signals): `trueup`
-    - **Company-direct** (any Greenhouse-hosted board via Google
-      site: dorks): `greenhouse`
-    - **Government/federal** (US): `usajobs`
-    - **Cleared roles** (security clearance required): `clearance_jobs`
-    - **Staffing agencies**: `kforce`, `insight_global`
-    - **Free aggregator APIs**: `adzuna`, `jooble`, `findwork`,
-      `the_muse`
-    - **Regional**: `bayt` (Middle East), `naukri` (India)
-
-    ## Picking sites for common queries
-
-    - "remote startup engineer" → `["wellfound", "hiring_cafe"]`
-    - "software engineer in [city]" → `["indeed", "linkedin",
-      "hiring_cafe", "greenhouse"]`
-    - "federal / cleared role" → `["usajobs", "clearance_jobs"]`
-    - "general broad search, max coverage" → `["hiring_cafe",
-      "indeed"]` (least overlap)
-    - "fastest results" → `["collab_work"]` (~280 ms/call)
-    - "specific company hiring" → `["greenhouse"]` with company in
-      `search_term`
+    Site catalog: call `get_supported_sites` for the full list and per-site
+    notes. Pass `site_name=[...]` to override the default (rarely needed —
+    the all-sources default is the point).
 
     Args:
-        search_term: Job keywords (e.g., "site reliability engineer").
-            Required.
-        site_name: List of sites from the catalog above. Override the
-            default for better coverage on niche queries.
-        location: City/state, "Remote", or country (e.g.,
-            "Atlanta, GA"). Optional.
+        search_term: Required. Job keywords, e.g. "site reliability engineer".
+        location: City/state ("Atlanta, GA"), "Remote", or country.
+        site_name: Optional list of sources to query. Default: all 26.
         results_wanted: Number of jobs to return (default 15).
-        job_type: One of "fulltime", "parttime", "internship",
-            "contract".
+        job_type: "fulltime" | "parttime" | "internship" | "contract".
         is_remote: True to filter remote-only.
         hours_old: Only return jobs posted in last N hours.
-        distance: Search radius in miles from location.
+        distance: Search radius in miles from location (default 50).
         easy_apply: True to filter to easy-apply only.
-        country_indeed: Country for indeed/glassdoor (default "usa").
-        linkedin_fetch_description: True for full LinkedIn descriptions
-            (slower).
-        offset: Skip first N results (pagination).
+        country_indeed: Country for Indeed/Glassdoor (default "usa").
+        linkedin_fetch_description: True for full LinkedIn JDs (slower).
+        offset: Skip first N results — for pagination via next_offset_hint.
         verbose: 0=errors, 1=warnings, 2=info.
-        min_salary: Drop jobs with min_amount below this. Jobs with
-            unknown salary are kept (not all postings list comp).
-        max_salary: Drop jobs with max_amount above this.
-        seniority_level: Filter by inferred seniority. Any of
-            ["entry", "mid", "senior", "staff", "executive"]. Jobs
-            whose title doesn't classify cleanly are kept (don't drop
-            ambiguous titles).
-        output_format: "markdown" (default, human-readable) or "json"
-            (structured `{jobs:[...], summary:{...}, pagination:{...}}`,
-            recommended for agent/automation use).
-        concise: True drops description previews, industry, job_level,
-            skills, experience_range, company_rating, and emoji from
-            the output. Saves ~70% of output tokens — recommended for
-            agents with smaller context windows. Same job results are
-            returned (only the formatting changes); no filtering effect.
+        min_salary, max_salary: Salary floor/ceiling. Unknown-salary jobs kept.
+        seniority_level: List of ["entry","mid","senior","staff","executive"].
+            Ambiguous titles kept (don't drop what we can't classify).
+        output_format: "markdown" (human) or "json" (agent-recommended).
+            JSON has {jobs, summary, pagination}. summary now includes
+            `per_source_count`, `errors`, `total_timing_ms`,
+            `sources_with_data`, `sources_empty` for full transparency.
+        concise: True drops description previews + emoji (saves ~70%
+            output tokens). Same data, less verbose.
 
-    Returns:
-        Markdown report (default) or JSON string (when output_format
-        is "json"). Both include jobs, summary stats, and pagination
-        hint to call again with offset=next_offset.
+    Returns: Markdown or JSON string. Markdown opens with a transparency
+    header showing which sources contributed vs errored vs returned 0.
     """
     try:
         logger.info(f"Starting job search for: {search_term}")
@@ -499,9 +456,26 @@ async def scrape_jobs_tool(
                 concise=concise,
             )
 
-        # Format results (markdown — default)
+        # Format results (markdown — default).
+        # Transparency line first: agents (and humans watching them) need
+        # to see immediately which sources contributed vs. errored vs. empty.
+        per_source = jobs_df.attrs.get("per_source", {}) if hasattr(jobs_df, "attrs") else {}
+        total_ms = jobs_df.attrs.get("total_timing_ms") if hasattr(jobs_df, "attrs") else None
+        n_total = len(per_source)
+        n_with = sum(1 for s in per_source.values() if s.get("count", 0) > 0)
+        n_empty = sum(1 for s in per_source.values() if s.get("count", 0) == 0 and not s.get("error"))
+        n_err = sum(1 for s in per_source.values() if s.get("error"))
+        err_names = sorted(s for s, st in per_source.items() if st.get("error"))
+        timing_str = f"{total_ms/1000:.1f}s" if total_ms else "?s"
+        transparency = (
+            f"🔎 Searched {n_total} sources in {timing_str} — "
+            f"{n_with} returned data, {n_empty} returned 0, {n_err} errored"
+        )
+        if err_names:
+            transparency += f" ({', '.join(err_names)})"
+
         prefix = "" if concise else "🎯 "
-        results_summary = f"{prefix}Found {len(jobs_df)} jobs for '{search_term}'"
+        results_summary = f"{transparency}\n\n{prefix}Found {len(jobs_df)} jobs for '{search_term}'"
         if location:
             results_summary += f" in {location}"
         

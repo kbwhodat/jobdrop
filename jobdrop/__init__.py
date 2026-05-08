@@ -153,10 +153,20 @@ def scrape_jobs(
         return site.value, scraped_data
 
     site_to_jobs_dict = {}
+    # Per-source telemetry — count / error / timing_ms — surfaced via
+    # df.attrs so callers (e.g., the MCP server) can show transparency
+    # about which sources actually contributed vs failed silently.
+    import time as _time
+    per_source_stats: dict[str, dict] = {}
+    total_t0 = _time.perf_counter()
 
     def worker(site):
-        site_val, scraped_info = scrape_site(site)
-        return site_val, scraped_info
+        t0 = _time.perf_counter()
+        try:
+            site_val, scraped_info = scrape_site(site)
+            return site_val, scraped_info, None, _time.perf_counter() - t0
+        except Exception as e:  # noqa: BLE001
+            return site.value, JobResponse(jobs=[]), f"{type(e).__name__}: {e}", _time.perf_counter() - t0
 
     with ThreadPoolExecutor() as executor:
         future_to_site = {
@@ -164,8 +174,15 @@ def scrape_jobs(
         }
 
         for future in as_completed(future_to_site):
-            site_value, scraped_data = future.result()
+            site_value, scraped_data, error, elapsed = future.result()
             site_to_jobs_dict[site_value] = scraped_data
+            per_source_stats[site_value] = {
+                "count": len(scraped_data.jobs),
+                "error": error,
+                "timing_ms": int(elapsed * 1000),
+            }
+
+    total_elapsed_ms = int((_time.perf_counter() - total_t0) * 1000)
 
     jobs_dfs: list[pd.DataFrame] = []
 
@@ -255,8 +272,14 @@ def scrape_jobs(
         jobs_df = jobs_df[desired_order]
 
         # Step 4: Sort the DataFrame as required
-        return jobs_df.sort_values(
+        result = jobs_df.sort_values(
             by=["site", "date_posted"], ascending=[True, False]
         ).reset_index(drop=True)
     else:
-        return pd.DataFrame()
+        result = pd.DataFrame()
+
+    # Attach per-source telemetry to the DataFrame for downstream inspection
+    # (the MCP server surfaces these in its summary block).
+    result.attrs["per_source"] = per_source_stats
+    result.attrs["total_timing_ms"] = total_elapsed_ms
+    return result
