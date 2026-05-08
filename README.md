@@ -8,7 +8,7 @@ for the boards that block standard scrapers.
 
 ## What's in here
 
-### 21 sources
+### 20 sources
 
 | `site_name` | Source | Notes |
 |---|---|---|
@@ -24,7 +24,6 @@ for the boards that block standard scrapers.
 | `greenhouse` | Greenhouse-hosted boards | Most YC and Series A+ companies; 3-layer staleness filter |
 | `bayt` | Bayt | Middle East focused |
 | `naukri` | Naukri | India's largest job portal |
-| `bdjobs` | BDJobs | Bangladesh's premier job portal |
 | `usajobs` | USAJobs.gov | US federal public API |
 | `adzuna` | Adzuna | Public API, 100% salary fill rate |
 | `jooble` | Jooble | Public API, 60+ countries |
@@ -107,7 +106,7 @@ print(jobs[["site", "title", "company", "location", "min_amount", "max_amount", 
 
 ```
 scrape_jobs(
-  site_name              list[str] | str — any of the 21 sources above (default: all)
+  site_name              list[str] | str — any of the 20 sources above (default: all)
   search_term            str        — keyword query
   google_search_term     str        — Google Jobs override (only filter for `google`)
   location               str        — "City, ST" or ZIP. Each scraper geocodes its own way.

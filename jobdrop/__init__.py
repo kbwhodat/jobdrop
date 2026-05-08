@@ -11,7 +11,6 @@ import pandas as pd
 
 from jobdrop.adzuna import Adzuna
 from jobdrop.bayt import BaytScraper
-from jobdrop.bdjobs import BDJobs
 from jobdrop.clearancejobs import ClearanceJobs
 from jobdrop.collabwork import CollabWork
 from jobdrop.findwork import Findwork
@@ -80,7 +79,6 @@ def scrape_jobs(
         Site.GOOGLE: Google,
         Site.BAYT: BaytScraper,
         Site.NAUKRI: Naukri,
-        Site.BDJOBS: BDJobs,
         # API-based sources added in the kbwhodat fork
         Site.USAJOBS: USAJobs,
         Site.ADZUNA: Adzuna,
@@ -250,9 +248,3 @@ def scrape_jobs(
         ).reset_index(drop=True)
     else:
         return pd.DataFrame()
-
-
-# Add BDJobs to __all__
-__all__ = [
-    "BDJobs",
-]

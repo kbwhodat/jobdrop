@@ -54,8 +54,6 @@ _SITE_ALIASES = {
     "us-jobs": "usajobs",
     "clearance-jobs": "clearance_jobs",
     "insight-global": "insight_global",
-    "bd_jobs": "bdjobs",
-    "bd-jobs": "bdjobs",
 }
 
 _REMOTE_LOCATION_ALIASES = {"remote", "anywhere", "wfh", "work from home", "us-remote", "remote-us"}
@@ -260,7 +258,7 @@ async def scrape_jobs_tool(
         "greenhouse", "usajobs",
         "clearance_jobs", "kforce", "insight_global",
         "adzuna", "jooble", "findwork", "the_muse",
-        "bayt", "naukri", "bdjobs",
+        "bayt", "naukri",
     ],
     results_wanted: int = 15,
     job_type: Optional[str] = None,
@@ -298,7 +296,7 @@ async def scrape_jobs_tool(
 
     ## Available sites — all 21 hit by default
 
-    `site_name` defaults to all 21 sources for max coverage. Override it
+    `site_name` defaults to all 20 sources for max coverage. Override it
     only when you specifically want to narrow the search (faster /
     region-specific / niche).
 
@@ -318,8 +316,7 @@ async def scrape_jobs_tool(
     - **Staffing agencies**: `kforce`, `insight_global`
     - **Free aggregator APIs**: `adzuna`, `jooble`, `findwork`,
       `the_muse`
-    - **Regional**: `bayt` (Middle East), `naukri` (India), `bdjobs`
-      (Bangladesh)
+    - **Regional**: `bayt` (Middle East), `naukri` (India)
 
     ## Picking sites for common queries
 
@@ -414,7 +411,7 @@ async def scrape_jobs_tool(
         site_name = [_SITE_ALIASES.get(s.lower().strip(), s) for s in site_name if isinstance(s, str)]
 
         # Validate site names
-        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "bdjobs", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe", "trueup"]
+        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe", "trueup"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
         if invalid_sites:
             # Fuzzy-match suggestions help the model recover on retry instead
@@ -653,10 +650,9 @@ def get_supported_sites() -> str:
             # Regional
             "bayt": "Bayt — Middle East focused job portal.",
             "naukri": "Naukri — India's leading job portal. Includes skills, experience_range, company_rating.",
-            "bdjobs": "BDJobs — Bangladesh's premier job portal.",
         }
 
-        response = "## 🔗 Supported Job Board Sites (21 total)\n\n"
+        response = "## 🔗 Supported Job Board Sites (20 total)\n\n"
         for site, description in sites_info.items():
             response += f"- **`{site}`**: {description}\n"
 
@@ -666,7 +662,7 @@ def get_supported_sites() -> str:
         response += "- **Government/cleared**: `[\"usajobs\", \"clearance_jobs\"]`.\n"
         response += "- **Specific company**: `[\"greenhouse\"]` with the company name in `search_term`.\n"
         response += "- **Fastest single-source**: `[\"collab_work\"]` (~280ms/call).\n"
-        response += "- **Regional**: include `bayt` (Middle East), `naukri` (India), `bdjobs` (Bangladesh) as needed.\n"
+        response += "- **Regional**: include `bayt` (Middle East), `naukri` (India) as needed.\n"
         response += "- **Rate limiting**: LinkedIn most restrictive; Indeed most reliable; collab_work fastest.\n"
 
         return response
@@ -698,14 +694,14 @@ def get_job_search_tips() -> str:
 - **State/Country**: "California", "Texas", "United Kingdom"
 - **Multiple locations**: Run separate searches for different cities
 
-### 🏢 **Site Selection Guide** (21 sites total — see `get_supported_sites`)
+### 🏢 **Site Selection Guide** (20 sites total — see `get_supported_sites`)
 - **Start small**: 2-3 sites is plenty for a good query
 - **Best general-purpose**: `hiring_cafe` (~140 AI-tagged jobs/page) + `indeed` (broadest mainstream)
 - **Startup roles**: `wellfound` + `hiring_cafe`
 - **Federal / cleared**: `usajobs` + `clearance_jobs`
 - **Specific company**: `greenhouse` with company name in `search_term`
 - **Fastest single-source**: `collab_work` (~280ms/call)
-- **Regional**: `bayt` (Middle East), `naukri` (India), `bdjobs` (Bangladesh)
+- **Regional**: `bayt` (Middle East), `naukri` (India)
 - **LinkedIn**: best quality but strict rate limits
 
 ### ⚡ **Performance Tips**

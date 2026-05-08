@@ -38,8 +38,3 @@ class BaytException(Exception):
 class NaukriException(Exception):
     def __init__(self,message=None):
         super().__init__(message or "An error occurred with Naukri")
-
-
-class BDJobsException(Exception):
-    def __init__(self, message=None):
-        super().__init__(message or "An error occurred with BDJobs")

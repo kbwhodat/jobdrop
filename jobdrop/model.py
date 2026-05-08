@@ -292,7 +292,6 @@ class Site(Enum):
     GOOGLE = "google"
     BAYT = "bayt"
     NAUKRI = "naukri"
-    BDJOBS = "bdjobs"
     # API-based sources added in the kbwhodat fork
     USAJOBS = "usajobs"
     ADZUNA = "adzuna"
