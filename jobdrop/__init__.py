@@ -4,14 +4,73 @@ from __future__ import annotations
 # os.environ reads. User-set env vars are preserved (setdefault semantics).
 from jobdrop import _defaults  # noqa: F401
 
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
 
 import pandas as pd
 
+# Cross-source dedup priority — lower wins. The same posting often
+# appears on a direct ATS (greenhouse/ashby/workday/lever/icims), a
+# major board (linkedin/indeed/glassdoor), and an aggregator (built in/
+# hiring cafe/trueup) at the same time. We keep the highest-fidelity
+# copy: direct ATS > major board > niche/aggregator.
+_SOURCE_PRIORITY = {
+    "greenhouse": 0, "ashby": 0, "workday": 0, "lever": 0, "icims": 0,
+    "linkedin": 1, "indeed": 1, "glassdoor": 1, "google": 1,
+    "ziprecruiter": 1, "wellfound": 1, "naukri": 1, "bayt": 1,
+    "usajobs": 1, "governmentjobs": 1,
+    "remoteok": 2, "weworkremotely": 2,
+    "adzuna": 2, "jooble": 2, "findwork": 2, "the_muse": 2,
+    "insight_global": 2, "clearance_jobs": 2, "kforce": 2,
+    "collab_work": 2,
+    "hiring_cafe": 3, "trueup": 3, "builtin": 3,
+}
+_TITLE_NORM_RE = re.compile(r"[^a-z0-9 ]+")
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm_title(title: str | None) -> str:
+    if not title:
+        return ""
+    t = _TITLE_NORM_RE.sub(" ", title.lower())
+    return _WS_RE.sub(" ", t).strip()
+
+
+def _dedup_cross_source(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Collapse (company, normalized_title) collisions across sources.
+
+    Rows missing either company or title are passed through untouched —
+    we only dedup pairs we can confidently match. Returns (deduped_df,
+    rows_dropped).
+    """
+    if df.empty or "company" not in df.columns or "title" not in df.columns:
+        return df, 0
+    company_norm = df["company"].fillna("").astype(str).str.lower().str.strip()
+    title_norm = df["title"].fillna("").astype(str).map(_norm_title)
+    has_key = (company_norm != "") & (title_norm != "")
+    if not has_key.any():
+        return df, 0
+    keyed = df[has_key].copy()
+    unkeyed = df[~has_key]
+    keyed["_dup_key"] = list(zip(company_norm[has_key], title_norm[has_key]))
+    keyed["_priority"] = keyed["site"].map(
+        lambda s: _SOURCE_PRIORITY.get(s, 5)
+    )
+    before = len(keyed)
+    keyed = (
+        keyed.sort_values("_priority", kind="stable")
+        .drop_duplicates("_dup_key", keep="first")
+        .drop(columns=["_dup_key", "_priority"])
+    )
+    dropped = before - len(keyed)
+    out = pd.concat([keyed, unkeyed], ignore_index=True)
+    return out, dropped
+
 from jobdrop.adzuna import Adzuna
 from jobdrop.ashby import Ashby
 from jobdrop.bayt import BaytScraper
+from jobdrop.builtin import BuiltIn
 from jobdrop.clearancejobs import ClearanceJobs
 from jobdrop.collabwork import CollabWork
 from jobdrop.findwork import Findwork
@@ -20,6 +79,7 @@ from jobdrop.google import Google
 from jobdrop.governmentjobs import GovernmentJobs
 from jobdrop.greenhouse import Greenhouse
 from jobdrop.hiring_cafe import HiringCafe
+from jobdrop.icims import ICIMS
 from jobdrop.indeed import Indeed
 from jobdrop.insightglobal import InsightGlobal
 from jobdrop.jooble import Jooble
@@ -105,6 +165,8 @@ def scrape_jobs(
         Site.REMOTEOK: RemoteOK,
         Site.WEWORKREMOTELY: WeWorkRemotely,
         Site.GOVERNMENTJOBS: GovernmentJobs,
+        Site.BUILTIN: BuiltIn,
+        Site.ICIMS: ICIMS,
     }
     set_logger_level(verbose)
     job_type = get_enum_from_value(job_type) if job_type else None
@@ -271,15 +333,22 @@ def scrape_jobs(
         # Reorder the DataFrame according to the desired order
         jobs_df = jobs_df[desired_order]
 
-        # Step 4: Sort the DataFrame as required
+        # Step 4: Cross-source dedup before final sort. Built In + iCIMS
+        # heavily overlap with LinkedIn/Indeed; this collapses dupes to
+        # the highest-fidelity source (direct ATS > board > aggregator).
+        jobs_df, dedup_dropped = _dedup_cross_source(jobs_df)
+
+        # Step 5: Sort the DataFrame as required
         result = jobs_df.sort_values(
             by=["site", "date_posted"], ascending=[True, False]
         ).reset_index(drop=True)
     else:
         result = pd.DataFrame()
+        dedup_dropped = 0
 
     # Attach per-source telemetry to the DataFrame for downstream inspection
     # (the MCP server surfaces these in its summary block).
     result.attrs["per_source"] = per_source_stats
     result.attrs["total_timing_ms"] = total_elapsed_ms
+    result.attrs["dedup_dropped"] = dedup_dropped
     return result

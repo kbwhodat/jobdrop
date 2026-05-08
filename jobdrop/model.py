@@ -312,6 +312,8 @@ class Site(Enum):
     REMOTEOK = "remoteok"
     WEWORKREMOTELY = "weworkremotely"
     GOVERNMENTJOBS = "governmentjobs"
+    BUILTIN = "builtin"
+    ICIMS = "icims"
 
 
 class SalarySource(Enum):

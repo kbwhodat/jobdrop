@@ -71,6 +71,13 @@ _SITE_ALIASES = {
     "government_jobs": "governmentjobs",
     "neogov": "governmentjobs",
     "governmentjobs.com": "governmentjobs",
+    "built-in": "builtin",
+    "built_in": "builtin",
+    "builtin.com": "builtin",
+    "builtinnyc": "builtin",
+    "builtinla": "builtin",
+    "builtinchicago": "builtin",
+    "icims.com": "icims",
 }
 
 _REMOTE_LOCATION_ALIASES = {"remote", "anywhere", "wfh", "work from home", "us-remote", "remote-us"}
@@ -286,8 +293,8 @@ async def scrape_jobs_tool(
         "linkedin", "indeed", "glassdoor", "zip_recruiter", "google",
         "hiring_cafe", "wellfound", "collab_work", "trueup",
         "greenhouse", "ashby", "workday", "lever",
-        "remoteok", "weworkremotely",
-        "usajobs", "governmentjobs",
+        "remoteok", "weworkremotely", "builtin",
+        "usajobs", "governmentjobs", "icims",
         "clearance_jobs", "kforce", "insight_global",
         "adzuna", "jooble", "findwork", "the_muse",
         "bayt", "naukri",
@@ -308,7 +315,7 @@ async def scrape_jobs_tool(
     output_format: str = "markdown",
     concise: bool = False,
 ) -> str:
-    """Search 26 job boards in one call. By default hits ALL 26 sources
+    """Search 28 job boards in one call. By default hits ALL 28 sources
     in parallel and returns normalized results.
 
     Quick example:
@@ -322,7 +329,7 @@ async def scrape_jobs_tool(
     Args:
         search_term: Required. Job keywords, e.g. "site reliability engineer".
         location: City/state ("Atlanta, GA"), "Remote", or country.
-        site_name: Optional list of sources to query. Default: all 26.
+        site_name: Optional list of sources to query. Default: all 28.
         results_wanted: Number of jobs to return (default 15).
         job_type: "fulltime" | "parttime" | "internship" | "contract".
         is_remote: True to filter remote-only.
@@ -387,7 +394,7 @@ async def scrape_jobs_tool(
         site_name = [_SITE_ALIASES.get(s.lower().strip(), s) for s in site_name if isinstance(s, str)]
 
         # Validate site names
-        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "ashby", "workday", "lever", "collab_work", "wellfound", "hiring_cafe", "trueup", "remoteok", "weworkremotely", "governmentjobs"]
+        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "ashby", "workday", "lever", "collab_work", "wellfound", "hiring_cafe", "trueup", "remoteok", "weworkremotely", "governmentjobs", "builtin", "icims"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
         if invalid_sites:
             # Fuzzy-match suggestions help the model recover on retry instead
@@ -635,6 +642,8 @@ def get_supported_sites() -> str:
             "lever": "Lever — any Lever-hosted board (Plaid, HashiCorp, Kraken, Spotify, etc.). Google-dorked discovery + REST enrichment.",
             "remoteok": "RemoteOK — fully-remote jobs aggregator. Single global JSON feed, sub-second response.",
             "weworkremotely": "WeWorkRemotely — fully-remote jobs aggregator. Public RSS feed, currently-live postings only.",
+            "builtin": "Built In — tech-vetted local job board family (Built In NYC/LA/Chicago/Atlanta/etc.). Heavy LinkedIn/Indeed overlap; cross-source dedup keeps its tech-quality filter without inflating results.",
+            "icims": "iCIMS — multi-tenant ATS (~40+ live tenants per query: Sargent & Lundy, Emory, RS&H, VHB, Constructconnect, etc.). Google-dorked discovery + per-tenant HTML enrichment.",
             "governmentjobs": "GovernmentJobs.com (NEOGOV) — state/county/city public-sector jobs (the non-federal companion to USAJobs). Google-dorked discovery + JSON-LD enrichment.",
             "usajobs": "USAJobs — US federal government roles. Public API.",
             # Staffing
@@ -651,7 +660,7 @@ def get_supported_sites() -> str:
             "naukri": "Naukri — India's leading job portal. Includes skills, experience_range, company_rating.",
         }
 
-        response = "## 🔗 Supported Job Board Sites (26 total)\n\n"
+        response = "## 🔗 Supported Job Board Sites (28 total)\n\n"
         for site, description in sites_info.items():
             response += f"- **`{site}`**: {description}\n"
 
@@ -693,7 +702,7 @@ def get_job_search_tips() -> str:
 - **State/Country**: "California", "Texas", "United Kingdom"
 - **Multiple locations**: Run separate searches for different cities
 
-### 🏢 **Site Selection Guide** (26 sites total — see `get_supported_sites`)
+### 🏢 **Site Selection Guide** (28 sites total — see `get_supported_sites`)
 - **Start small**: 2-3 sites is plenty for a good query
 - **Best general-purpose**: `hiring_cafe` (~140 AI-tagged jobs/page) + `indeed` (broadest mainstream)
 - **Startup roles**: `wellfound` + `hiring_cafe`
