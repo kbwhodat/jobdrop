@@ -276,7 +276,7 @@ async def scrape_jobs_tool(
     output_format: str = "markdown",
     concise: bool = False,
 ) -> str:
-    """Search 21 job boards in one call. Returns normalized results
+    """Search 20 job boards in one call. Returns normalized results
     (title, company, location, salary, job_type, date_posted) as a
     markdown report or JSON.
 
@@ -294,7 +294,7 @@ async def scrape_jobs_tool(
     )
     ```
 
-    ## Available sites — all 21 hit by default
+    ## Available sites — all 20 hit by default
 
     `site_name` defaults to all 20 sources for max coverage. Override it
     only when you specifically want to narrow the search (faster /
