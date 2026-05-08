@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "jobdrop"
-version = "2.4.3"
+version = "2.5.0"
 description = "21-source job scraper library + MCP server. LinkedIn, Indeed, Glassdoor, Google, ZipRecruiter, Wellfound, Hiring Cafe, TrueUp, Greenhouse, USAJobs, Adzuna, Jooble, Findwork, The Muse, Insight Global, Clearance Jobs, Kforce, CollabWork, Naukri, Bayt, BDJobs."
 authors = ["kbwhodat <katobyan@gmail.com>"]
 homepage = "https://github.com/kbwhodat/jobdrop"
@@ -29,6 +29,10 @@ tls-client = "^1.0.1"
 markdownify = "^1.1.0"
 regex = "^2024.4.28"
 selenium-driverless = "^1.9.4"
+# Greenhouse + Google scrapers use zendriver (CDP-direct, no WebDriver
+# fingerprint) since selenium-driverless started hitting Google's
+# /sorry/ wall on most Linux IPs.
+zendriver = "^0.15.0"
 curl-cffi = "^0.7.0"
 # Wellfound: Firefox-based anti-detect browser. Defeats DataDome's
 # per-route /role/* WAF rule where every Chromium tool (selenium-driverless,

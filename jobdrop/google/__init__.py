@@ -1,21 +1,23 @@
-"""Google Jobs scraper — headless via selenium-driverless.
+"""Google Jobs scraper — headless via zendriver.
 
-## Why selenium-driverless
+## Why zendriver
 
 Google's 2026 anti-bot CAPTCHAs every fresh browser launch from
-playwright (chromium/chrome/firefox), undetected-chromedriver, nodriver,
-patchright — every standard automation framework. Headed and headless
-both fail. The only browsers Google trusts are long-running instances
-that have accumulated session history.
+playwright (chromium/chrome/firefox), undetected-chromedriver, classic
+selenium, even selenium-driverless on most Linux IPs. Headed and
+headless both fail. The only drivers that consistently slip past are
+ones with zero WebDriver fingerprint and clean CDP call patterns.
 
-`selenium-driverless` works around this by talking to Chrome over CDP
-without any of the Selenium/WebDriver fingerprint surface. Cold-start,
-headless, fresh profile — verified against three different Google
-queries returning real jobs without /sorry/ redirects.
+`zendriver` (fork of `nodriver`, both by ultrafunkamsterdam) talks to
+Chrome over CDP directly — no chromedriver, no Selenium bridge, no
+JS-injection bootstrap. ``navigator.webdriver`` is naturally false,
+TLS fingerprint matches stock Chrome. Cold-start, headless, fresh
+profile — verified against the greenhouse ``site:`` dork and Google
+Jobs SERPs returning real jobs without /sorry/ redirects.
 
 ## End-to-end behavior
 
-  - Launches Chrome headless (`--headless=new`)
+  - Launches Chrome headless via zendriver (CDP)
   - Navigates Google Jobs SERP (`udm=8`)
   - Extracts cards using DOM walk (find aria "Add ... to saves list"
     button, walk up to the ancestor containing the metadata block)
@@ -87,11 +89,11 @@ class Google(Scraper):
         log.info(f"google: query={query!r}")
 
         try:
-            from selenium_driverless import webdriver  # noqa: F401
+            import zendriver as zd  # noqa: F401
         except ImportError:
             log.error(
-                "google: selenium-driverless is required. "
-                "Install with: pip install selenium-driverless"
+                "google: zendriver is required. "
+                "Install with: pip install zendriver"
             )
             return JobResponse(jobs=[])
 
@@ -130,30 +132,41 @@ class Google(Scraper):
         return JobResponse(jobs=jobs)
 
     async def _scrape_async(self, url: str) -> list[dict[str, Any]]:
-        from selenium_driverless import webdriver
+        import zendriver as zd
 
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--window-size=1280,900")
-        if self.user_agent:
-            options.add_argument(f"--user-agent={self.user_agent}")
+        # Don't override the User-Agent. zendriver's natural Linux Chrome
+        # fingerprint (TLS, JS engine, accept headers) is internally
+        # consistent; forcing a macOS UA on top trips Google's /sorry/ wall
+        # because the UA contradicts the rest of the fingerprint.
+        browser_args = ["--window-size=1280,900"]
 
-        async with webdriver.Chrome(options=options) as driver:
-            await driver.get(url, wait_load=True, timeout=_NAV_TIMEOUT_S)
+        browser = await zd.start(headless=True, sandbox=False, browser_args=browser_args)
+        try:
+            tab = await browser.get(url)
             await asyncio.sleep(_RENDER_SLEEP_S)
 
-            current_url = await driver.current_url
-            if "/sorry/" in current_url:
+            try:
+                current_url = await tab.evaluate("location.href")
+            except Exception:
+                current_url = url
+            if "/sorry/" in str(current_url):
                 log.error(
-                    f"google: hit /sorry/ CAPTCHA at {current_url[:120]}. "
-                    f"selenium-driverless usually bypasses this — possible IP "
-                    f"reputation issue or anti-bot upgrade."
+                    f"google: hit /sorry/ CAPTCHA at {str(current_url)[:120]}. "
+                    f"zendriver normally bypasses this — possible IP reputation "
+                    f"issue or anti-bot upgrade."
                 )
                 return []
 
-            cards = await driver.execute_script(_EXTRACT_JS, serialization="json")
+            # zendriver's evaluate runs an expression, not a function body, so
+            # wrap the extraction script in an IIFE. It returns a JSON-safe
+            # array of plain dicts.
+            cards = await tab.evaluate(
+                f"(() => {{ {_EXTRACT_JS} }})()",
+                return_by_value=True,
+            )
             return cards or []
+        finally:
+            await browser.stop()
 
     def _build_query(self, si: ScraperInput) -> str:
         if si.google_search_term:

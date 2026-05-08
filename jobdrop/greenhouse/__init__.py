@@ -15,8 +15,10 @@ API for clean structured data.
 Query template:
   ``site:job-boards.greenhouse.io OR site:boards.greenhouse.io "<keywords>" "<location>"``
 
-We use ``selenium-driverless`` to drive a headless Chrome instance and
-defeat Google's anti-bot wall — same pattern as ``jobdrop.google``.
+We use ``zendriver`` to drive a headless Chrome instance over CDP
+without any WebDriver fingerprint — same pattern as ``jobdrop.google``.
+zendriver replaced ``selenium-driverless`` after Google's anti-bot
+upgrade started serving /sorry/ on every selenium-based launch.
 Pagination via ``&start=N`` (10 results/page).
 
 ## Stage 2: API enrichment
@@ -108,11 +110,11 @@ class Greenhouse(Scraper):
         wanted = scraper_input.results_wanted
 
         try:
-            from selenium_driverless import webdriver  # noqa: F401
+            import zendriver as zd  # noqa: F401
         except ImportError:
             log.error(
-                "Greenhouse: selenium-driverless is required for Google "
-                "discovery. Install with: pip install selenium-driverless"
+                "Greenhouse: zendriver is required for Google "
+                "discovery. Install with: pip install zendriver"
             )
             return JobResponse(jobs=[])
 
@@ -241,46 +243,50 @@ async def _discover_via_google(
 ) -> list[tuple[str, str]]:
     """Drive headless Chrome through Google SERPs until we have enough URLs.
 
-    Returns a list of (board_token, job_id) in result order, deduplicated.
-    `start_offset` shifts the starting SERP position (in result count) so
-    callers can paginate beyond the first page. `user_agent` overrides the
-    default Chrome UA — useful for matching the host's native browser
-    fingerprint when Google challenges with /sorry/ CAPTCHA.
+    Uses zendriver (CDP-direct, no WebDriver fingerprint) to walk past
+    Google's anti-bot wall. Returns a list of (board_token, job_id) in
+    result order, deduplicated. `start_offset` shifts the starting SERP
+    position (in result count) so callers can paginate beyond the first
+    page. `user_agent` overrides the default Chrome UA.
     """
-    from selenium_driverless import webdriver
+    import zendriver as zd
 
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--window-size=1280,900")
-    if user_agent:
-        options.add_argument(f"--user-agent={user_agent}")
+    # Don't override the User-Agent. zendriver's natural Linux Chrome
+    # fingerprint (TLS, JS engine, accept headers) is internally consistent;
+    # forcing a macOS UA on top trips Google's /sorry/ wall because the UA
+    # contradicts the rest of the fingerprint.
+    browser_args = ["--window-size=1280,900"]
+    _ = user_agent  # intentionally unused under zendriver
 
     seen: set[tuple[str, str]] = set()
     ordered: list[tuple[str, str]] = []
     encoded = quote_plus(query)
 
-    async with webdriver.Chrome(options=options) as driver:
+    browser = await zd.start(headless=True, sandbox=False, browser_args=browser_args)
+    try:
         # Walk up to 5 SERP pages (~50 results) to satisfy `wanted`.
-        for page in range(5):
-            url = _GOOGLE_SEARCH_URL.format(query=encoded, start=start_offset + page * 10)
-            log.info(f"Greenhouse: SERP page {page + 1} → {url[:120]}")
+        for page_idx in range(5):
+            url = _GOOGLE_SEARCH_URL.format(query=encoded, start=start_offset + page_idx * 10)
+            log.info(f"Greenhouse: SERP page {page_idx + 1} → {url[:120]}")
             try:
-                await driver.get(url, wait_load=True, timeout=_NAV_TIMEOUT_S)
+                tab = await browser.get(url)
             except Exception as e:
-                log.error(f"Greenhouse: SERP fetch failed on page {page + 1}: {e}")
+                log.error(f"Greenhouse: SERP fetch failed on page {page_idx + 1}: {e}")
                 break
             await asyncio.sleep(_RENDER_SLEEP_S)
 
-            current_url = await driver.current_url
-            if "/sorry/" in current_url:
+            try:
+                current_url = await tab.evaluate("location.href")
+            except Exception:
+                current_url = url
+            if "/sorry/" in str(current_url):
                 log.error(
-                    f"Greenhouse: hit Google /sorry/ CAPTCHA on page {page + 1}. "
+                    f"Greenhouse: hit Google /sorry/ CAPTCHA on page {page_idx + 1}. "
                     "Returning what we have."
                 )
                 break
 
-            html = await driver.page_source
+            html = await tab.get_content()
             new_count = 0
             for m in _GH_URL_RE.finditer(html):
                 key = (m.group(1), m.group(2))
@@ -291,7 +297,7 @@ async def _discover_via_google(
                 new_count += 1
 
             log.info(
-                f"Greenhouse: page {page + 1} added {new_count} URLs "
+                f"Greenhouse: page {page_idx + 1} added {new_count} URLs "
                 f"(total {len(ordered)} / wanted {wanted})"
             )
             if len(ordered) >= wanted:
@@ -300,6 +306,8 @@ async def _discover_via_google(
                 # Either Google returned the same results twice or we ran
                 # out of matches — no point fetching more pages.
                 break
+    finally:
+        await browser.stop()
 
     return ordered
 
