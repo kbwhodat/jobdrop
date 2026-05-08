@@ -147,8 +147,10 @@ class Ashby(Scraper):
             f"across {len(org_slugs)} orgs"
         )
 
-        # Stage 3: client-side filter (search_term + location + remote)
-        search_term = (scraper_input.search_term or "").lower().strip()
+        # Stage 3: client-side filter — title-substring only (location/team
+        # text matches give too many false positives like "Atlanta Engineering
+        # Office" matching a "engineer" search). Then location + remote.
+        title_token = (scraper_input.search_term or "").lower().strip()
         location_filter = (scraper_input.location or "").lower().strip()
         is_remote = bool(scraper_input.is_remote)
 
@@ -160,9 +162,8 @@ class Ashby(Scraper):
                 (sl.get("locationName") or "").lower()
                 for sl in (p.get("secondaryLocations") or [])
             )
-            haystack = f"{title} {loc} {sec_locs}"
 
-            if search_term and search_term not in haystack:
+            if title_token and title_token not in title:
                 continue
             if location_filter:
                 if (
@@ -177,12 +178,16 @@ class Ashby(Scraper):
 
         log.info(f"Ashby: {len(filtered)} postings match filters")
 
-        # Stage 4: paginate + build JobPosts
+        # Stage 4: dedup by id, then paginate
+        seen_ids: set[str] = set()
         jobs: list[JobPost] = []
-        for org, p in filtered[start_offset : start_offset + wanted]:
+        for org, p in filtered:
             post = _build_jobpost(org, p)
-            if post is not None:
-                jobs.append(post)
+            if post is None or post.id in seen_ids:
+                continue
+            seen_ids.add(post.id)
+            jobs.append(post)
+        jobs = jobs[start_offset : start_offset + wanted]
 
         log.info(f"Ashby: returning {len(jobs)} jobs (offset={start_offset})")
         return JobResponse(jobs=jobs)

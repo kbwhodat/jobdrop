@@ -47,12 +47,14 @@ _HOST_FRAGMENT = "myworkdayjobs.com"
 _GOOGLE_SEARCH_URL = "https://www.google.com/search?q={query}&start={start}"
 
 # SERP URL: https://{tenant}.{wdN}.myworkdayjobs.com/{locale}/{site}/job/...
-# We capture (tenant, datacenter, site). Locale is optional (some tenants
-# omit it; some use en-US/fr-FR/etc.).
+# Capture (tenant, datacenter, site). Site name MUST be followed by `/job/`
+# or end-of-URL — without that anchor, the regex would match address path
+# segments (e.g. ``/200-Galleria-Parkway-SE-...``) as fake sites and create
+# duplicate "configs" for the same tenant.
 _WD_URL_RE = re.compile(
     r"https?://([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com"
     r"(?:/[a-z]{2}-[A-Z]{2})?"
-    r"/([A-Za-z0-9_-]+)"
+    r"/([A-Za-z0-9_-]+)(?:/job/|/?$|/?[?#])"
 )
 
 _RENDER_SLEEP_S = 3.0
@@ -129,13 +131,20 @@ class Workday(Scraper):
             f"across {len(tenants)} tenants"
         )
 
-        # Stage 3: client-side filter (location + remote)
+        # Stage 3: client-side filter — title-substring (Workday's server-side
+        # searchText is too lenient: it matches JD body text, so "network
+        # engineer" returns Service Delivery Managers etc.). Combine with
+        # location + remote filters.
+        title_token = (scraper_input.search_term or "").lower().strip()
         location_filter = (scraper_input.location or "").lower().strip()
         is_remote = bool(scraper_input.is_remote)
 
         filtered: list[tuple[dict, dict]] = []
         for tenant_cfg, p in all_postings:
+            title = (p.get("title") or "").lower()
             loc = (p.get("locationsText") or "").lower()
+            if title_token and title_token not in title:
+                continue
             if location_filter and location_filter not in loc:
                 if not (("remote" in loc) and is_remote):
                     continue
@@ -145,13 +154,18 @@ class Workday(Scraper):
 
         log.info(f"Workday: {len(filtered)} match filters")
 
-        # Stage 4: paginate + build JobPosts
+        # Stage 4: paginate + build JobPosts (dedup by id at the end since
+        # multiple SERP-discovered configs can resolve to the same posting).
         cutoff = _resolve_cutoff(scraper_input)
+        seen_ids: set[str] = set()
         jobs: list[JobPost] = []
-        for tenant_cfg, p in filtered[start_offset : start_offset + wanted]:
+        for tenant_cfg, p in filtered:
             post = _build_jobpost(tenant_cfg, p, cutoff)
-            if post is not None:
-                jobs.append(post)
+            if post is None or post.id in seen_ids:
+                continue
+            seen_ids.add(post.id)
+            jobs.append(post)
+        jobs = jobs[start_offset : start_offset + wanted]
 
         log.info(f"Workday: returning {len(jobs)} jobs (offset={start_offset})")
         return JobResponse(jobs=jobs)

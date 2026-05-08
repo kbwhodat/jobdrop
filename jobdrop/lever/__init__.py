@@ -119,8 +119,10 @@ class Lever(Scraper):
                     all_postings.append((slug, p))
         log.info(f"Lever: API enrichment hit {len(all_postings)} postings across {len(slugs)} orgs")
 
-        # Stage 3: client-side filter
-        search_term = (scraper_input.search_term or "").lower().strip()
+        # Stage 3: client-side filter — title-substring only (team/location
+        # text matches gave false positives like "engineer" matching
+        # "Engineering" team for a Service Delivery Manager role).
+        title_token = (scraper_input.search_term or "").lower().strip()
         location_filter = (scraper_input.location or "").lower().strip()
         is_remote = bool(scraper_input.is_remote)
 
@@ -129,9 +131,7 @@ class Lever(Scraper):
             title = (p.get("text") or "").lower()
             cats = p.get("categories") or {}
             loc = (cats.get("location") or "").lower()
-            team = (cats.get("team") or "").lower()
-            haystack = f"{title} {loc} {team}"
-            if search_term and search_term not in haystack:
+            if title_token and title_token not in title:
                 continue
             if location_filter and location_filter not in loc:
                 if not (("remote" in loc) and is_remote):
@@ -142,12 +142,16 @@ class Lever(Scraper):
 
         log.info(f"Lever: {len(filtered)} match filters")
 
-        # Stage 4: paginate + build JobPosts
+        # Stage 4: dedup by id, then paginate
+        seen_ids: set[str] = set()
         jobs: list[JobPost] = []
-        for slug, p in filtered[start_offset : start_offset + wanted]:
+        for slug, p in filtered:
             post = _build_jobpost(slug, p)
-            if post is not None:
-                jobs.append(post)
+            if post is None or post.id in seen_ids:
+                continue
+            seen_ids.add(post.id)
+            jobs.append(post)
+        jobs = jobs[start_offset : start_offset + wanted]
 
         log.info(f"Lever: returning {len(jobs)} jobs (offset={start_offset})")
         return JobResponse(jobs=jobs)

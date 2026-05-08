@@ -54,6 +54,12 @@ _SITE_ALIASES = {
     "us-jobs": "usajobs",
     "clearance-jobs": "clearance_jobs",
     "insight-global": "insight_global",
+    "ashbyhq": "ashby",
+    "ashby-hq": "ashby",
+    "workday-jobs": "workday",
+    "myworkdayjobs": "workday",
+    "lever-jobs": "lever",
+    "leverhq": "lever",
 }
 
 _REMOTE_LOCATION_ALIASES = {"remote", "anywhere", "wfh", "work from home", "us-remote", "remote-us"}
