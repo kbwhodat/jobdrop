@@ -1,305 +1,387 @@
+"""Naukri scraper — HTML search page via zendriver.
+
+Naukri's JSON API (``naukri.com/jobapi/v3/search``) now returns
+``HTTP 406 — recaptcha required`` to non-browser clients, even with
+TLS impersonation (``curl_cffi`` + Chrome). The hardcoded ``Nkparam``
+token in the legacy headers no longer satisfies the challenge.
+
+The fix: drive the public HTML search page with zendriver (CDP-direct,
+no WebDriver fingerprint). The same approach used for greenhouse and
+google. Naukri renders 20 job cards per page server-side, with stable
+class hooks (``.srp-jobtuple-wrapper``, ``data-job-id``) that survive
+the React/Next hydration.
+
+URL patterns:
+  https://www.naukri.com/{kw-slug}-jobs                       (page 1)
+  https://www.naukri.com/{kw-slug}-jobs-{N}                   (page N)
+  https://www.naukri.com/{kw-slug}-jobs-in-{loc-slug}         (page 1 + city)
+  https://www.naukri.com/{kw-slug}-jobs-in-{loc-slug}-{N}     (page N + city)
+
+DOM extraction returns a JSON-safe array of dicts with title,
+company, location, experience, salary text, date_posted text, and
+job_url. Salary is parsed from Indian formats (Lacs P.A., Cr) into
+INR ranges. Experience and date_posted strings are normalized to
+the standard JobPost fields.
+"""
 from __future__ import annotations
 
-import math
-import random
-import time
-from datetime import datetime, date, timedelta
-from typing import Optional
+import asyncio
+import re as builtin_re
+import threading
+from datetime import date, datetime, timedelta
+from typing import Any, Optional
 
 import regex as re
-import requests
 
-from jobdrop.exception import NaukriException
-from jobdrop.naukri.constant import headers as naukri_headers
-from jobdrop.naukri.util import (
-    is_job_remote,
-    parse_job_type,
-    parse_company_industry,
-)
+from jobdrop.naukri.util import is_job_remote
 from jobdrop.model import (
-    JobPost,
-    Location,
-    JobResponse,
-    Country,
     Compensation,
-    DescriptionFormat,
+    Country,
+    JobPost,
+    JobResponse,
+    Location,
     Scraper,
     ScraperInput,
     Site,
 )
-from jobdrop.util import (
-    extract_emails_from_text,
-    currency_parser,
-    markdown_converter,
-    create_session,
-    create_logger,
-)
+from jobdrop.util import create_logger
 
 log = create_logger("Naukri")
 
-class Naukri(Scraper):
-    base_url = "https://www.naukri.com/jobapi/v3/search"
-    delay = 3
-    band_delay = 4
-    jobs_per_page = 20  
+_BASE = "https://www.naukri.com"
+_JOBS_PER_PAGE = 20
+_NAV_TIMEOUT_S = 30
+_RENDER_SLEEP_S = 6.0
 
+
+# Page-side card extractor. Naukri renders job cards with a few
+# different class hooks across A/B variants — we query the union and
+# dedupe by data-job-id.
+_EXTRACT_JS = r"""
+const cards = document.querySelectorAll(
+  '.srp-jobtuple-wrapper, .cust-job-tuple, [data-job-id]'
+);
+const seen = new Set();
+const out = [];
+for (const c of cards) {
+  const jid = c.getAttribute('data-job-id');
+  if (!jid || seen.has(jid)) continue;
+  seen.add(jid);
+
+  const titleEl = c.querySelector('.title, a.title, h2');
+  const compEl = c.querySelector('.comp-name, .companyName, [class*="comp-name"]');
+  const locEl = c.querySelector('[class*="loc"], .location, span.locWdth');
+  const expEl = c.querySelector('[class*="exp"]');
+  const salEl = c.querySelector('[class*="sal"]');
+  const dateEl = c.querySelector('[class*="job-post-day"], .job-post-day');
+  const linkEl = c.querySelector('a[href*="/job-listings"]');
+  const skillsEls = c.querySelectorAll('.tags-gt li, .tag-li');
+  const skills = [];
+  for (const s of skillsEls) {
+    const t = (s.innerText || '').trim();
+    if (t) skills.push(t);
+  }
+
+  out.push({
+    job_id: jid,
+    title: titleEl ? titleEl.innerText.trim() : null,
+    company: compEl ? compEl.innerText.trim() : null,
+    location: locEl ? locEl.innerText.trim() : null,
+    experience: expEl ? expEl.innerText.trim() : null,
+    salary: salEl ? salEl.innerText.trim() : null,
+    date_posted: dateEl ? dateEl.innerText.trim() : null,
+    job_url: linkEl ? linkEl.href : null,
+    skills: skills,
+  });
+}
+return out;
+"""
+
+
+class Naukri(Scraper):
     def __init__(
-        self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        proxies: list[str] | str | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
-        """
-        Initializes NaukriScraper with the Naukri API URL
-        """
         super().__init__(Site.NAUKRI, proxies=proxies, ca_cert=ca_cert)
-        self.session = create_session(
-            proxies=self.proxies,
-            ca_cert=ca_cert,
-            is_tls=False,
-            has_retry=True,
-            delay=5,
-            clear_cookies=True,
-        )
-        self.session.headers.update(naukri_headers)
-        self.scraper_input = None
-        self.country = "India"  #naukri is india-focused by default
-        log.info("Naukri scraper initialized")
+        self.scraper_input: ScraperInput | None = None
+        # user_agent is accepted for compatibility but intentionally
+        # not forwarded to zendriver — overriding the UA contradicts
+        # zendriver's natural Linux Chrome fingerprint and trips
+        # bot detection on multiple sites.
+        self._user_agent = user_agent
+        log.info("Naukri scraper initialized (zendriver mode)")
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
-        """
-        Scrapes Naukri API for jobs with scraper_input criteria
-        :param scraper_input:
-        :return: job_response
-        """
         self.scraper_input = scraper_input
-        job_list: list[JobPost] = []
-        seen_ids = set()
-        start = scraper_input.offset or 0
-        page = (start // self.jobs_per_page) + 1
-        request_count = 0
-        seconds_old = (
-            scraper_input.hours_old * 3600 if scraper_input.hours_old else None
-        )
-        continue_search = (
-            lambda: len(job_list) < scraper_input.results_wanted and page <= 50  # Arbitrary limit
-        )
+        wanted = scraper_input.results_wanted
+        start_offset = max(scraper_input.offset or 0, 0)
+        start_page = (start_offset // _JOBS_PER_PAGE) + 1
 
-        while continue_search():
-            request_count += 1
-            log.info(
-                f"Scraping page {request_count} / {math.ceil(scraper_input.results_wanted / self.jobs_per_page)} "
-                f"for search term: {scraper_input.search_term}"
+        try:
+            import zendriver as zd  # noqa: F401
+        except ImportError:
+            log.error(
+                "Naukri: zendriver is required. "
+                "Install with: pip install zendriver"
             )
-            kw = scraper_input.search_term or ""
-            params = {
-                "noOfResults": self.jobs_per_page,
-                "urlType": "search_by_keyword",
-                "searchType": "adv",
-                "keyword": kw,
-                "pageNo": page,
-                "k": kw,
-                "seoKey": f"{kw.lower().replace(' ', '-')}-jobs" if kw else "jobs",
-                "src": "jobsearchDesk",
-                "latLong": "",
-                "location": scraper_input.location,
-                "remote": "true" if scraper_input.is_remote else None,
-            }
-            if seconds_old:
-                params["days"] = seconds_old // 86400  # Convert to days
+            return JobResponse(jobs=[])
 
-            params = {k: v for k, v in params.items() if v is not None}
-            try:
-                log.debug(f"Sending request to {self.base_url} with params: {params}")
-                response = self.session.get(self.base_url, params=params, timeout=10)
-                if response.status_code not in range(200, 400):
-                    err = f"Naukri API response status code {response.status_code} - {response.text}"
-                    log.error(err)
-                    return JobResponse(jobs=job_list)
-                data = response.json()
-                job_details = data.get("jobDetails", [])
-                log.info(f"Received {len(job_details)} job entries from API")
-                if not job_details:
-                    log.warning("No job details found in API response")
-                    break
-            except Exception as e:
-                log.error(f"Naukri API request failed: {str(e)}")
-                return JobResponse(jobs=job_list)
-
-            for job in job_details:
-                job_id = job.get("jobId")
-                if not job_id or job_id in seen_ids:
-                    continue
-                seen_ids.add(job_id)
-                log.debug(f"Processing job ID: {job_id}")
-
-                try:
-                    fetch_desc = scraper_input.linkedin_fetch_description
-                    job_post = self._process_job(job, job_id, fetch_desc)
-                    if job_post:
-                        job_list.append(job_post)
-                        log.info(f"Added job: {job_post.title} (ID: {job_id})")
-                    if not continue_search():
-                        break
-                except Exception as e:
-                    log.error(f"Error processing job ID {job_id}: {str(e)}")
-                    raise NaukriException(str(e))
-
-            if continue_search():
-                time.sleep(random.uniform(self.delay, self.delay + self.band_delay))
-                page += 1
-
-        job_list = job_list[:scraper_input.results_wanted]
-        log.info(f"Scraping completed. Total jobs collected: {len(job_list)}")
-        return JobResponse(jobs=job_list)
-
-    def _process_job(
-        self, job: dict, job_id: str, full_descr: bool
-    ) -> Optional[JobPost]:
-        """
-        Processes a single job from API response into a JobPost object
-        """
-        title = job.get("title", "N/A")
-        company = job.get("companyName", "N/A")
-        company_url = f"https://www.naukri.com/{job.get('staticUrl', '')}" if job.get("staticUrl") else None
-
-        location = self._get_location(job.get("placeholders", []))
-        compensation = self._get_compensation(job.get("placeholders", []))
-        date_posted = self._parse_date(job.get("footerPlaceholderLabel"), job.get("createdDate"))
-
-        job_url = f"https://www.naukri.com{job.get('jdURL', f'/job/{job_id}')}"
-        raw_description = job.get("jobDescription") if full_descr else None
-
-        job_type = parse_job_type(raw_description) if raw_description else None
-        company_industry = parse_company_industry(raw_description) if raw_description else None
-
-        description = raw_description
-        if description and self.scraper_input.description_format == DescriptionFormat.MARKDOWN:
-            description = markdown_converter(description)
-
-        is_remote = is_job_remote(title, description or "", location)
-        company_logo = job.get("logoPathV3") or job.get("logoPath")
-
-        # Naukri-specific fields
-        skills = job.get("tagsAndSkills", "").split(",") if job.get("tagsAndSkills") else None
-        experience_range = job.get("experienceText")
-        ambition_box = job.get("ambitionBoxData", {})
-        company_rating = float(ambition_box.get("AggregateRating")) if ambition_box.get("AggregateRating") else None
-        company_reviews_count = ambition_box.get("ReviewsCount")
-        vacancy_count = job.get("vacancy")
-        work_from_home_type = self._infer_work_from_home_type(job.get("placeholders", []), title, description or "")
-
-        job_post = JobPost(
-            id=f"nk-{job_id}",
-            title=title,
-            company_name=company,
-            company_url=company_url,
-            location=location,
-            is_remote=is_remote,
-            date_posted=date_posted,
-            job_url=job_url,
-            compensation=compensation,
-            job_type=job_type,
-            company_industry=company_industry,
-            description=description,
-            emails=extract_emails_from_text(description or ""),
-            company_logo=company_logo,
-            skills=skills,
-            experience_range=experience_range,
-            company_rating=company_rating,
-            company_reviews_count=company_reviews_count,
-            vacancy_count=vacancy_count,
-            work_from_home_type=work_from_home_type,
-        )
-        log.debug(f"Processed job: {title} at {company}")
-        return job_post
-
-    def _get_location(self, placeholders: list[dict]) -> Location:
-        """
-        Extracts location data from placeholders
-        """
-        location = Location(country=Country.INDIA)
-        for placeholder in placeholders:
-            if placeholder.get("type") == "location":
-                location_str = placeholder.get("label", "")
-                parts = location_str.split(", ")
-                city = parts[0] if parts else None
-                state = parts[1] if len(parts) > 1 else None
-                location = Location(city=city, state=state, country=Country.INDIA)
-                log.debug(f"Parsed location: {location.display_location()}")
-                break
-        return location
-
-    def _get_compensation(self, placeholders: list[dict]) -> Optional[Compensation]:
-        """
-        Extracts compensation data from placeholders, handling Indian salary formats (Lakhs, Crores)
-        """
-        for placeholder in placeholders:
-            if placeholder.get("type") == "salary":
-                salary_text = placeholder.get("label", "").strip()
-                if salary_text == "Not disclosed":
-                    log.debug("Salary not disclosed")
-                    return None
-
-                # Handle Indian salary formats (e.g., "12-16 Lacs P.A.", "1-5 Cr")
-                salary_match = re.match(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(Lacs|Lakh|Cr)\s*(P\.A\.)?", salary_text, re.IGNORECASE)
-                if salary_match:
-                    min_salary, max_salary, unit = salary_match.groups()[:3]
-                    min_salary, max_salary = float(min_salary), float(max_salary)
-                    currency = "INR"
-
-                    # Convert to base units (INR)
-                    if unit.lower() in ("lacs", "lakh"):
-                        min_salary *= 100000  # 1 Lakh = 100,000 INR
-                        max_salary *= 100000
-                    elif unit.lower() == "cr":
-                        min_salary *= 10000000  # 1 Crore = 10,000,000 INR
-                        max_salary *= 10000000
-
-                    log.debug(f"Parsed salary: {min_salary} - {max_salary} INR")
-                    return Compensation(
-                        min_amount=int(min_salary),
-                        max_amount=int(max_salary),
-                        currency=currency,
+        try:
+            cards = _run_async(
+                _scrape_pages(
+                    search_term=scraper_input.search_term or "",
+                    location=scraper_input.location,
+                    wanted=wanted,
+                    start_page=start_page,
+                )
+            )
+        except RuntimeError as e:
+            if "asyncio.run" in str(e) or "running event loop" in str(e):
+                cards = _run_on_thread(
+                    _scrape_pages(
+                        search_term=scraper_input.search_term or "",
+                        location=scraper_input.location,
+                        wanted=wanted,
+                        start_page=start_page,
                     )
-                else:
-                    log.debug(f"Could not parse salary: {salary_text}")
-                    return None
+                )
+            else:
+                raise
+
+        log.info(f"Naukri: extracted {len(cards)} raw cards")
+
+        jobs: list[JobPost] = []
+        for card in cards:
+            post = _build_job_post(card)
+            if post is not None:
+                jobs.append(post)
+            if len(jobs) >= wanted:
+                break
+
+        log.info(f"Naukri: returning {len(jobs)} jobs")
+        return JobResponse(jobs=jobs)
+
+
+# -----------------------------------------------------------------------------
+# Async fetch helpers
+# -----------------------------------------------------------------------------
+
+
+def _slugify(text: str) -> str:
+    """Naukri-style URL slug: lowercase, spaces → hyphens, strip non-word."""
+    s = (text or "").lower().strip()
+    s = builtin_re.sub(r"[^\w\s-]", "", s)
+    s = builtin_re.sub(r"\s+", "-", s)
+    s = builtin_re.sub(r"-+", "-", s)
+    return s.strip("-")
+
+
+def _build_search_url(search_term: str, location: str | None, page: int) -> str:
+    kw_slug = _slugify(search_term) or "jobs"
+    base_path = f"{kw_slug}-jobs"
+    if location:
+        # Take only the city portion before any comma — naukri's location
+        # slugs are city-only, "Bangalore, India" → "bangalore".
+        city = location.split(",")[0].strip()
+        loc_slug = _slugify(city)
+        if loc_slug:
+            base_path = f"{kw_slug}-jobs-in-{loc_slug}"
+    if page > 1:
+        base_path = f"{base_path}-{page}"
+    return f"{_BASE}/{base_path}"
+
+
+async def _scrape_pages(
+    search_term: str, location: str | None, wanted: int, start_page: int,
+) -> list[dict[str, Any]]:
+    """Walk naukri SERPs until we have ``wanted`` cards or pages run dry."""
+    import zendriver as zd
+
+    browser = await zd.start(
+        headless=True, sandbox=False, browser_args=["--window-size=1280,900"],
+    )
+    seen_ids: set[str] = set()
+    all_cards: list[dict[str, Any]] = []
+    try:
+        # Cap pagination at 5 pages (~100 cards) regardless of `wanted`
+        # to bound runtime; callers can use offset for deeper paging.
+        for offset in range(5):
+            page_num = start_page + offset
+            url = _build_search_url(search_term, location, page_num)
+            log.info(f"Naukri: page {page_num} → {url}")
+            try:
+                tab = await browser.get(url)
+            except Exception as e:
+                log.error(f"Naukri: page {page_num} fetch failed: {e}")
+                break
+            await asyncio.sleep(_RENDER_SLEEP_S)
+
+            try:
+                cards = await tab.evaluate(
+                    f"(() => {{ {_EXTRACT_JS} }})()", return_by_value=True,
+                )
+            except Exception as e:
+                log.error(f"Naukri: page {page_num} extraction failed: {e}")
+                break
+
+            cards = cards or []
+            new_count = 0
+            for c in cards:
+                jid = c.get("job_id")
+                if not jid or jid in seen_ids:
+                    continue
+                seen_ids.add(jid)
+                all_cards.append(c)
+                new_count += 1
+
+            log.info(
+                f"Naukri: page {page_num} added {new_count} cards "
+                f"(total {len(all_cards)} / wanted {wanted})"
+            )
+            if len(all_cards) >= wanted:
+                break
+            if new_count == 0:
+                break
+    finally:
+        await browser.stop()
+
+    return all_cards
+
+
+def _run_async(coro):
+    return asyncio.run(coro)
+
+
+def _run_on_thread(coro):
+    """Run an awaitable from sync code already inside a running loop."""
+    box: dict[str, Any] = {}
+
+    def runner():
+        try:
+            box["ok"] = asyncio.run(coro)
+        except BaseException as e:  # noqa: BLE001
+            box["err"] = e
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
+    if "err" in box:
+        raise box["err"]
+    return box.get("ok")
+
+
+# -----------------------------------------------------------------------------
+# Card → JobPost
+# -----------------------------------------------------------------------------
+
+
+_SALARY_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(Lacs?|Lakh|Cr)\s*(P\.A\.?|PA)?",
+    re.I,
+)
+
+
+def _parse_compensation(salary_text: str | None) -> Optional[Compensation]:
+    """Parse Indian salary strings (e.g. '5-14 Lacs PA', '1-5 Cr')."""
+    if not salary_text:
+        return None
+    text = salary_text.strip()
+    if text.lower().startswith("not disclosed"):
         return None
 
-    def _parse_date(self, label: str, created_date: int) -> Optional[date]:
-        """
-        Parses date from footerPlaceholderLabel or createdDate, returning a date object
-        """
-        today = datetime.now()
-        if not label:
-            if created_date:
-                return datetime.fromtimestamp(created_date / 1000).date()  # Convert to date
+    m = _SALARY_RE.search(text)
+    if not m:
+        return None
+    min_v, max_v, unit = m.group(1), m.group(2), m.group(3)
+    try:
+        min_amt = float(min_v)
+        max_amt = float(max_v)
+    except ValueError:
+        return None
+    unit_l = unit.lower()
+    if unit_l in ("lacs", "lac", "lakh"):
+        min_amt *= 100_000
+        max_amt *= 100_000
+    elif unit_l == "cr":
+        min_amt *= 10_000_000
+        max_amt *= 10_000_000
+
+    return Compensation(
+        min_amount=int(min_amt), max_amount=int(max_amt), currency="INR",
+    )
+
+
+_DAYS_AGO_RE = re.compile(r"(\d+)\s*\+?\s*day", re.I)
+
+
+def _parse_date(label: str | None) -> Optional[date]:
+    if not label:
+        return None
+    s = label.strip().lower()
+    today = datetime.now()
+    if "today" in s or "just now" in s or "few hours" in s or "hour" in s:
+        return today.date()
+    if "yesterday" in s:
+        return (today - timedelta(days=1)).date()
+    m = _DAYS_AGO_RE.search(s)
+    if m:
+        try:
+            days = int(m.group(1))
+            return (today - timedelta(days=days)).date()
+        except ValueError:
             return None
-        label = label.lower()
-        if "today" in label or "just now" in label or "few hours" in label:
-            log.debug("Date parsed as today")
-            return today.date()
-        elif "ago" in label:
-            match = re.search(r"(\d+)\s*day", label)
-            if match:
-                days = int(match.group(1))
-                parsed_date = (today - timedelta(days = days)).date()
-                log.debug(f"Date parsed: {days} days ago -> {parsed_date}")
-                return parsed_date
-        elif created_date:
-            parsed_date = datetime.fromtimestamp(created_date / 1000).date()
-            log.debug(f"Date parsed from timestamp: {parsed_date}")
-            return parsed_date
-        log.debug("No date parsed")
+    return None
+
+
+def _parse_location(loc_text: str | None) -> Location:
+    """Naukri location strings: 'Bengaluru', 'Pune, Mumbai (All Areas)',
+    'Hybrid - Bangalore', 'Remote'. Take the first comma-separated city."""
+    if not loc_text:
+        return Location(country=Country.INDIA)
+    s = loc_text.strip()
+    # Strip leading "Hybrid - " or similar prefixes
+    s = builtin_re.sub(r"^(hybrid|remote|wfh|work from home)\s*-\s*", "", s, flags=builtin_re.I)
+    parts = [p.strip() for p in s.split(",")]
+    city = parts[0] if parts else None
+    state = parts[1] if len(parts) > 1 else None
+    # Strip parenthetical suffixes like "(All Areas)"
+    if city:
+        city = builtin_re.sub(r"\s*\([^)]*\)\s*$", "", city).strip() or None
+    return Location(city=city, state=state, country=Country.INDIA)
+
+
+def _build_job_post(card: dict[str, Any]) -> JobPost | None:
+    job_id = card.get("job_id")
+    title = (card.get("title") or "").strip()
+    if not job_id or not title:
         return None
 
-    def _infer_work_from_home_type(self, placeholders: list[dict], title: str, description: str) -> Optional[str]:
-        """
-        Infers work-from-home type from job data (e.g., 'Hybrid', 'Remote', 'Work from office')
-        """
-        location_str = next((p["label"] for p in placeholders if p["type"] == "location"), "").lower()
-        if "hybrid" in location_str or "hybrid" in title.lower() or "hybrid" in description.lower():
-            return "Hybrid"
-        elif "remote" in location_str or "remote" in title.lower() or "remote" in description.lower():
-            return "Remote"
-        elif "work from office" in description.lower() or not ("remote" in description.lower() or "hybrid" in description.lower()):
-            return "Work from office"
-        return None
+    company = (card.get("company") or "").strip() or None
+    raw_location = card.get("location")
+    location_obj = _parse_location(raw_location)
+    compensation = _parse_compensation(card.get("salary"))
+    date_posted = _parse_date(card.get("date_posted"))
+    job_url = card.get("job_url") or f"{_BASE}/job-listings-{job_id}"
+
+    skills = [s for s in (card.get("skills") or []) if s] or None
+    experience_range = card.get("experience") or None
+
+    is_remote = is_job_remote(title, "", location_obj) or (
+        bool(raw_location) and "remote" in raw_location.lower()
+    )
+
+    return JobPost(
+        id=f"nk-{job_id}",
+        title=title,
+        company_name=company,
+        location=location_obj,
+        is_remote=is_remote,
+        date_posted=date_posted,
+        job_url=job_url,
+        compensation=compensation,
+        skills=skills,
+        experience_range=experience_range,
+    )

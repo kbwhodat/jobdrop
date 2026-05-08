@@ -1,117 +1,122 @@
+"""Bayt scraper — HTML search page via zendriver.
+
+Bayt's plain HTTP fetch returns ``HTTP 403 Forbidden`` to ``requests``
+and ``curl_cffi`` clients (likely a per-IP/per-UA bot wall). The HTML
+itself is server-rendered with stable CSS hooks, so a real browser
+fetch + BeautifulSoup parse works.
+
+Approach: drive the search page with zendriver (CDP-direct, no
+WebDriver fingerprint), grab the rendered HTML, and parse with the
+existing BS4 selectors:
+
+  - Card container:  ``li[data-js-job]``
+  - Title:           ``h2 > a``
+  - Company:         ``div.t-nowrap.p10l > span``
+  - Location:        ``div.t-mute.t-small``
+
+URL pattern (unchanged):
+  ``https://www.bayt.com/en/international/jobs/{kw-slug}-jobs/?page={N}``
+"""
 from __future__ import annotations
 
-import random
-import time
+import asyncio
+import threading
+from typing import Any
 
 from bs4 import BeautifulSoup
 
 from jobdrop.model import (
-    Scraper,
-    ScraperInput,
-    Site,
+    Country,
     JobPost,
     JobResponse,
     Location,
-    Country,
+    Scraper,
+    ScraperInput,
+    Site,
 )
-from jobdrop.util import create_logger, create_session
+from jobdrop.util import create_logger
 
 log = create_logger("Bayt")
 
+_BASE = "https://www.bayt.com"
+_RENDER_SLEEP_S = 6.0
+
 
 class BaytScraper(Scraper):
-    base_url = "https://www.bayt.com"
-    delay = 2
-    band_delay = 3
+    base_url = _BASE
 
     def __init__(
-        self, proxies: list[str] | str | None = None, ca_cert: str | None = None, user_agent: str | None = None
+        self,
+        proxies: list[str] | str | None = None,
+        ca_cert: str | None = None,
+        user_agent: str | None = None,
     ):
         super().__init__(Site.BAYT, proxies=proxies, ca_cert=ca_cert)
-        self.scraper_input = None
-        self.session = None
+        self.scraper_input: ScraperInput | None = None
         self.country = "worldwide"
+        # user_agent accepted for compatibility but not forwarded —
+        # overriding the UA contradicts zendriver's natural fingerprint.
+        self._user_agent = user_agent
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         self.scraper_input = scraper_input
-        self.session = create_session(
-            proxies=self.proxies, ca_cert=self.ca_cert, is_tls=False, has_retry=True
-        )
-        job_list: list[JobPost] = []
-        page = 1
-        results_wanted = (
-            scraper_input.results_wanted if scraper_input.results_wanted else 10
-        )
+        wanted = scraper_input.results_wanted or 10
 
-        while len(job_list) < results_wanted:
-            log.info(f"Fetching Bayt jobs page {page}")
-            job_elements = self._fetch_jobs(self.scraper_input.search_term, page)
-            if not job_elements:
-                break
-
-            if job_elements:
-                log.debug(
-                    "First job element snippet:\n" + job_elements[0].prettify()[:500]
-                )
-
-            initial_count = len(job_list)
-            for job in job_elements:
-                try:
-                    job_post = self._extract_job_info(job)
-                    if job_post:
-                        job_list.append(job_post)
-                        if len(job_list) >= results_wanted:
-                            break
-                    else:
-                        log.debug(
-                            "Extraction returned None. Job snippet:\n"
-                            + job.prettify()[:500]
-                        )
-                except Exception as e:
-                    log.error(f"Bayt: Error extracting job info: {str(e)}")
-                    continue
-
-            if len(job_list) == initial_count:
-                log.info(f"No new jobs found on page {page}. Ending pagination.")
-                break
-
-            page += 1
-            time.sleep(random.uniform(self.delay, self.delay + self.band_delay))
-
-        job_list = job_list[: scraper_input.results_wanted]
-        return JobResponse(jobs=job_list)
-
-    def _fetch_jobs(self, query: str, page: int) -> list | None:
-        """
-        Grabs the job results for the given query and page number.
-        """
         try:
-            url = f"{self.base_url}/en/international/jobs/{query}-jobs/?page={page}"
-            response = self.session.get(url)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            job_listings = soup.find_all("li", attrs={"data-js-job": ""})
-            log.debug(f"Found {len(job_listings)} job listing elements")
-            return job_listings
-        except Exception as e:
-            log.error(f"Bayt: Error fetching jobs - {str(e)}")
-            return None
+            import zendriver as zd  # noqa: F401
+        except ImportError:
+            log.error(
+                "Bayt: zendriver is required. "
+                "Install with: pip install zendriver"
+            )
+            return JobResponse(jobs=[])
 
-    def _extract_job_info(self, job: BeautifulSoup) -> JobPost | None:
-        """
-        Extracts the job information from a single job listing.
-        """
-        # Find the h2 element holding the title and link (no class filtering)
+        try:
+            pages_html = _run_async(
+                _fetch_pages(scraper_input.search_term or "", wanted)
+            )
+        except RuntimeError as e:
+            if "asyncio.run" in str(e) or "running event loop" in str(e):
+                pages_html = _run_on_thread(
+                    _fetch_pages(scraper_input.search_term or "", wanted)
+                )
+            else:
+                raise
+
+        job_list: list[JobPost] = []
+        seen_ids: set[str] = set()
+        for html in pages_html:
+            soup = BeautifulSoup(html, "html.parser")
+            cards = soup.find_all("li", attrs={"data-js-job": True})
+            log.info(f"Bayt: found {len(cards)} cards on page")
+            for card in cards:
+                try:
+                    post = self._extract_job_info(card)
+                except Exception as e:
+                    log.error(f"Bayt: Error extracting job info: {e}")
+                    continue
+                if not post or post.id in seen_ids:
+                    continue
+                seen_ids.add(post.id)
+                job_list.append(post)
+                if len(job_list) >= wanted:
+                    break
+            if len(job_list) >= wanted:
+                break
+
+        log.info(f"Bayt: returning {len(job_list)} jobs")
+        return JobResponse(jobs=job_list[:wanted])
+
+    def _extract_job_info(self, job) -> JobPost | None:
         job_general_information = job.find("h2")
         if not job_general_information:
-            return
+            return None
 
         job_title = job_general_information.get_text(strip=True)
         job_url = self._extract_job_url(job_general_information)
         if not job_url:
-            return
+            return None
 
-        # Extract company name using the original approach:
         company_tag = job.find("div", class_="t-nowrap p10l")
         company_name = (
             company_tag.find("span").get_text(strip=True)
@@ -119,7 +124,6 @@ class BaytScraper(Scraper):
             else None
         )
 
-        # Extract location using the original approach:
         location_tag = job.find("div", class_="t-mute t-small")
         location = location_tag.get_text(strip=True) if location_tag else None
 
@@ -136,10 +140,76 @@ class BaytScraper(Scraper):
             job_url=job_url,
         )
 
-    def _extract_job_url(self, job_general_information: BeautifulSoup) -> str | None:
-        """
-        Pulls the job URL from the 'a' within the h2 element.
-        """
+    def _extract_job_url(self, job_general_information) -> str | None:
         a_tag = job_general_information.find("a")
         if a_tag and a_tag.has_attr("href"):
-            return self.base_url + a_tag["href"].strip()
+            return _BASE + a_tag["href"].strip()
+        return None
+
+
+# -----------------------------------------------------------------------------
+# Async fetch helpers
+# -----------------------------------------------------------------------------
+
+
+def _build_url(search_term: str, page: int) -> str:
+    """Bayt URL: kebab-case slug. Spaces → hyphens, lowercased."""
+    slug = "-".join(part for part in (search_term or "").lower().split() if part)
+    if not slug:
+        slug = "jobs"
+    return f"{_BASE}/en/international/jobs/{slug}-jobs/?page={page}"
+
+
+async def _fetch_pages(search_term: str, wanted: int) -> list[str]:
+    """Fetch enough Bayt SERPs (30 cards/page) to satisfy ``wanted``.
+
+    Returns a list of rendered HTML strings — one per page — to be
+    parsed by the BS4 logic in ``BaytScraper``.
+    """
+    import zendriver as zd
+
+    browser = await zd.start(
+        headless=True, sandbox=False, browser_args=["--window-size=1280,900"],
+    )
+    pages: list[str] = []
+    # Bayt renders 30 jobs per page. Cap at 5 pages (~150 cards).
+    max_pages = min(5, max(1, (wanted + 29) // 30))
+    try:
+        for page in range(1, max_pages + 1):
+            url = _build_url(search_term, page)
+            log.info(f"Bayt: fetching page {page} → {url}")
+            try:
+                tab = await browser.get(url)
+            except Exception as e:
+                log.error(f"Bayt: page {page} fetch failed: {e}")
+                break
+            await asyncio.sleep(_RENDER_SLEEP_S)
+            html = await tab.get_content()
+            pages.append(html)
+            if len(pages) * 30 >= wanted:
+                break
+    finally:
+        await browser.stop()
+    return pages
+
+
+def _run_async(coro):
+    return asyncio.run(coro)
+
+
+def _run_on_thread(coro):
+    """Run an awaitable from sync code already inside a running loop."""
+    box: dict[str, Any] = {}
+
+    def runner():
+        try:
+            box["ok"] = asyncio.run(coro)
+        except BaseException as e:  # noqa: BLE001
+            box["err"] = e
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
+    if "err" in box:
+        raise box["err"]
+    return box.get("ok")
