@@ -128,9 +128,12 @@ class Ashby(Scraper):
         if not org_slugs:
             return JobResponse(jobs=[])
 
-        # Stage 2: parallel API fetch per org
+        # Stage 2: parallel API fetch per org. Collect into a dict keyed
+        # by org, then rebuild in discovery order so offset-based pagination
+        # is stable across calls (as_completed returns thread completion
+        # order, which is non-deterministic).
         sess = cc_requests.Session(impersonate="safari17_2_ios")
-        all_postings: list[tuple[str, dict]] = []
+        per_org: dict[str, list[dict]] = {}
         with ThreadPoolExecutor(max_workers=_API_WORKERS) as ex:
             futures = {ex.submit(_fetch_board, sess, org): org for org in org_slugs}
             for fut in as_completed(futures):
@@ -140,8 +143,11 @@ class Ashby(Scraper):
                 except Exception as e:
                     log.debug(f"Ashby: {org} board fetch failed: {e!r}")
                     continue
-                for p in postings:
-                    all_postings.append((org, p))
+                per_org[org] = postings
+        all_postings: list[tuple[str, dict]] = []
+        for org in org_slugs:
+            for p in per_org.get(org, []):
+                all_postings.append((org, p))
         log.info(
             f"Ashby: API enrichment hit {len(all_postings)} postings "
             f"across {len(org_slugs)} orgs"

@@ -107,7 +107,9 @@ class Workday(Scraper):
         search_text = scraper_input.search_term or ""
         per_tenant_target = max(20, (wanted + start_offset) // 2 + 5)
 
-        all_postings: list[tuple[dict, dict]] = []
+        # Collect into a dict keyed by tenant identity, then rebuild in
+        # discovery order for deterministic pagination across calls.
+        per_tenant: dict[tuple, list[dict]] = {}
         with ThreadPoolExecutor(max_workers=_API_WORKERS) as ex:
             futures = {
                 ex.submit(_fetch_tenant, sess, t, search_text, per_tenant_target): t
@@ -123,8 +125,13 @@ class Workday(Scraper):
                         f"fetch failed: {e!r}"
                     )
                     continue
-                for p in postings:
-                    all_postings.append((tenant_cfg, p))
+                key = (tenant_cfg["tenant"], tenant_cfg["datacenter"], tenant_cfg["site"])
+                per_tenant[key] = postings
+        all_postings: list[tuple[dict, dict]] = []
+        for tenant_cfg in tenants:
+            key = (tenant_cfg["tenant"], tenant_cfg["datacenter"], tenant_cfg["site"])
+            for p in per_tenant.get(key, []):
+                all_postings.append((tenant_cfg, p))
 
         log.info(
             f"Workday: API enrichment hit {len(all_postings)} postings "

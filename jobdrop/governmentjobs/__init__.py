@@ -111,15 +111,21 @@ class GovernmentJobs(Scraper):
             return JobResponse(jobs=[])
 
         sess = cc_requests.Session(impersonate="safari17_2_ios")
-        enriched: list[tuple[str, dict]] = []
         fetch_target = min(len(urls), max(wanted * 2, wanted + 10))
+        url_subset = urls[:fetch_target]
+        # Preserve discovery order through parallel enrichment so offset-
+        # based pagination is stable across calls.
+        results: dict[str, dict] = {}
         with ThreadPoolExecutor(max_workers=_API_WORKERS) as ex:
-            futures = {ex.submit(_fetch_detail, sess, u): u for u in urls[:fetch_target]}
+            futures = {ex.submit(_fetch_detail, sess, u): u for u in url_subset}
             for fut in as_completed(futures):
                 url = futures[fut]
                 data = fut.result()
                 if data:
-                    enriched.append((url, data))
+                    results[url] = data
+        enriched: list[tuple[str, dict]] = [
+            (u, results[u]) for u in url_subset if u in results
+        ]
         log.info(f"GovernmentJobs: enriched {len(enriched)}/{fetch_target} detail pages")
 
         title_token = (scraper_input.search_term or "").lower().strip()

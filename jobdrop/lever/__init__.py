@@ -103,9 +103,10 @@ class Lever(Scraper):
         if not slugs:
             return JobResponse(jobs=[])
 
-        # Stage 2: parallel REST fetch per org
+        # Stage 2: parallel REST fetch per org. Rebuild in discovery order
+        # for deterministic pagination across calls.
         sess = cc_requests.Session(impersonate="safari17_2_ios")
-        all_postings: list[tuple[str, dict]] = []
+        per_slug: dict[str, list[dict]] = {}
         with ThreadPoolExecutor(max_workers=_API_WORKERS) as ex:
             futures = {ex.submit(_fetch_board, sess, s): s for s in slugs}
             for fut in as_completed(futures):
@@ -115,8 +116,11 @@ class Lever(Scraper):
                 except Exception as e:
                     log.debug(f"Lever: {slug} fetch failed: {e!r}")
                     continue
-                for p in postings:
-                    all_postings.append((slug, p))
+                per_slug[slug] = postings
+        all_postings: list[tuple[str, dict]] = []
+        for slug in slugs:
+            for p in per_slug.get(slug, []):
+                all_postings.append((slug, p))
         log.info(f"Lever: API enrichment hit {len(all_postings)} postings across {len(slugs)} orgs")
 
         # Stage 3: client-side filter — title-substring only (team/location
