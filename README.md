@@ -1,6 +1,6 @@
 # jobdrop
 
-A multi-source job scraper. Hits 20 job boards in one call, normalizes
+A multi-source job scraper. Hits 23 job boards in one call, normalizes
 the results into a pandas DataFrame, and ships with anti-bot handling
 for the boards that block standard scrapers.
 
@@ -8,7 +8,7 @@ for the boards that block standard scrapers.
 
 ## What's in here
 
-### 20 sources
+### 23 sources
 
 | `site_name` | Source | Notes |
 |---|---|---|
@@ -22,6 +22,9 @@ for the boards that block standard scrapers.
 | `collab_work` | CollabWork | Community/newsletter aggregator (~2k curated roles, fastest source) |
 | `trueup` | TrueUp | Tech-startup curated. Adds company-trajectory score, valuation, funding stage, layoff/health flags. Pure HTTP, sub-second |
 | `greenhouse` | Greenhouse-hosted boards | Most YC and Series A+ companies; 3-layer staleness filter |
+| `ashby` | Ashby-hosted boards | OpenAI, Notion, Linear, Ramp, Mercury, Vercel, etc. Google-dorked discovery + GraphQL enrichment |
+| `workday` | Workday tenants | Fortune-500-heavy (NVIDIA, Salesforce, Disney, Comcast, JPMorgan, Lockheed, etc.). Google-dorked discovery + CXS API enrichment |
+| `lever` | Lever-hosted boards | Plaid, HashiCorp, Kraken, Spotify, etc. Google-dorked discovery + REST enrichment |
 | `bayt` | Bayt | Middle East focused |
 | `naukri` | Naukri | India's largest job portal |
 | `usajobs` | USAJobs.gov | US federal public API |
@@ -106,7 +109,7 @@ print(jobs[["site", "title", "company", "location", "min_amount", "max_amount", 
 
 ```
 scrape_jobs(
-  site_name              list[str] | str — any of the 20 sources above (default: all)
+  site_name              list[str] | str — any of the 23 sources above (default: all)
   search_term            str        — keyword query
   google_search_term     str        — Google Jobs override (only filter for `google`)
   location               str        — "City, ST" or ZIP. Each scraper geocodes its own way.

@@ -306,6 +306,9 @@ class Site(Enum):
     WELLFOUND = "wellfound"
     HIRING_CAFE = "hiring_cafe"
     TRUEUP = "trueup"
+    ASHBY = "ashby"
+    WORKDAY = "workday"
+    LEVER = "lever"
 
 
 class SalarySource(Enum):

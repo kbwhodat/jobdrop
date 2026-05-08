@@ -10,6 +10,7 @@ from typing import Tuple
 import pandas as pd
 
 from jobdrop.adzuna import Adzuna
+from jobdrop.ashby import Ashby
 from jobdrop.bayt import BaytScraper
 from jobdrop.clearancejobs import ClearanceJobs
 from jobdrop.collabwork import CollabWork
@@ -22,12 +23,14 @@ from jobdrop.indeed import Indeed
 from jobdrop.insightglobal import InsightGlobal
 from jobdrop.jooble import Jooble
 from jobdrop.kforce import Kforce
+from jobdrop.lever import Lever
 from jobdrop.linkedin import LinkedIn
 from jobdrop.naukri import Naukri
 from jobdrop.the_muse import TheMuse
 from jobdrop.trueup import TrueUp
 from jobdrop.usajobs import USAJobs
 from jobdrop.wellfound import Wellfound
+from jobdrop.workday import Workday
 from jobdrop.model import JobType, Location, JobResponse, Country
 from jobdrop.model import SalarySource, ScraperInput, Site
 from jobdrop.util import (
@@ -93,6 +96,9 @@ def scrape_jobs(
         Site.WELLFOUND: Wellfound,
         Site.HIRING_CAFE: HiringCafe,
         Site.TRUEUP: TrueUp,
+        Site.ASHBY: Ashby,
+        Site.WORKDAY: Workday,
+        Site.LEVER: Lever,
     }
     set_logger_level(verbose)
     job_type = get_enum_from_value(job_type) if job_type else None

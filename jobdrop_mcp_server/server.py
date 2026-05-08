@@ -255,7 +255,7 @@ async def scrape_jobs_tool(
     site_name: List[str] = [
         "linkedin", "indeed", "glassdoor", "zip_recruiter", "google",
         "hiring_cafe", "wellfound", "collab_work", "trueup",
-        "greenhouse", "usajobs",
+        "greenhouse", "ashby", "workday", "lever", "usajobs",
         "clearance_jobs", "kforce", "insight_global",
         "adzuna", "jooble", "findwork", "the_muse",
         "bayt", "naukri",
@@ -276,7 +276,7 @@ async def scrape_jobs_tool(
     output_format: str = "markdown",
     concise: bool = False,
 ) -> str:
-    """Search 20 job boards in one call. Returns normalized results
+    """Search 23 job boards in one call. Returns normalized results
     (title, company, location, salary, job_type, date_posted) as a
     markdown report or JSON.
 
@@ -294,9 +294,9 @@ async def scrape_jobs_tool(
     )
     ```
 
-    ## Available sites — all 20 hit by default
+    ## Available sites — all 23 hit by default
 
-    `site_name` defaults to all 20 sources for max coverage. Override it
+    `site_name` defaults to all 23 sources for max coverage. Override it
     only when you specifically want to narrow the search (faster /
     region-specific / niche).
 
@@ -411,7 +411,7 @@ async def scrape_jobs_tool(
         site_name = [_SITE_ALIASES.get(s.lower().strip(), s) for s in site_name if isinstance(s, str)]
 
         # Validate site names
-        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "collab_work", "wellfound", "hiring_cafe", "trueup"]
+        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "ashby", "workday", "lever", "collab_work", "wellfound", "hiring_cafe", "trueup"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
         if invalid_sites:
             # Fuzzy-match suggestions help the model recover on retry instead
@@ -637,6 +637,9 @@ def get_supported_sites() -> str:
             "trueup": "TrueUp — tech-startup-focused. Adds company-trajectory score, valuation, funding stage, and layoff/health flags into job description. Direct ATS apply URLs. Pure HTTP, sub-second.",
             # Company-direct + government
             "greenhouse": "Greenhouse — any greenhouse-hosted board (most YC-stage and Series A+ companies). 3-layer staleness filter (404 / past deadline / 90-day age cap).",
+            "ashby": "Ashby — any Ashby-hosted board (OpenAI, Notion, Linear, Ramp, Mercury, Vercel, etc.). Google-dorked discovery + GraphQL enrichment.",
+            "workday": "Workday — Fortune-500-heavy ATS (NVIDIA, Salesforce, Disney, Comcast, JPMorgan, Lockheed, etc.). Google-dorked discovery + CXS API enrichment.",
+            "lever": "Lever — any Lever-hosted board (Plaid, HashiCorp, Kraken, Spotify, etc.). Google-dorked discovery + REST enrichment.",
             "usajobs": "USAJobs — US federal government roles. Public API.",
             # Staffing
             "clearance_jobs": "ClearanceJobs (DHI) — security-cleared roles. Full JD, salary, structured job_type.",
@@ -652,7 +655,7 @@ def get_supported_sites() -> str:
             "naukri": "Naukri — India's leading job portal. Includes skills, experience_range, company_rating.",
         }
 
-        response = "## 🔗 Supported Job Board Sites (20 total)\n\n"
+        response = "## 🔗 Supported Job Board Sites (23 total)\n\n"
         for site, description in sites_info.items():
             response += f"- **`{site}`**: {description}\n"
 
@@ -694,7 +697,7 @@ def get_job_search_tips() -> str:
 - **State/Country**: "California", "Texas", "United Kingdom"
 - **Multiple locations**: Run separate searches for different cities
 
-### 🏢 **Site Selection Guide** (20 sites total — see `get_supported_sites`)
+### 🏢 **Site Selection Guide** (23 sites total — see `get_supported_sites`)
 - **Start small**: 2-3 sites is plenty for a good query
 - **Best general-purpose**: `hiring_cafe` (~140 AI-tagged jobs/page) + `indeed` (broadest mainstream)
 - **Startup roles**: `wellfound` + `hiring_cafe`
