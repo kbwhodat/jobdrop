@@ -18,8 +18,9 @@ GUI, no anti-bot battle.
 
 When HC deploys a new build, buildId changes. We cache the current
 buildId at module level. If a fetch returns 404 (buildId stale), we
-fall back ONCE to a real-browser fetch (the only path that defeats
-CF on the home page) to extract a fresh buildId, update the cache,
+fall back ONCE to a headless Camoufox fetch (Firefox-based, the only
+headless path that defeats CF on the home page — same pattern as
+``jobdrop.wellfound``) to extract a fresh buildId, update the cache,
 and retry.
 
 ## SearchState shape
@@ -290,8 +291,9 @@ class HiringCafe(Scraper):
 
 
 def _refresh_build_id() -> bool:
-    """Lazy fallback: launch headed Chrome ONCE to extract fresh buildId from
-    Hiring Cafe's home page (CF-protected; only headed real Chrome passes).
+    """Lazy fallback: launch headless Camoufox ONCE to extract fresh buildId
+    from Hiring Cafe's home page (CF-protected; Firefox-based headless is the
+    only path that defeats CF — same pattern as ``jobdrop.wellfound``).
 
     Updates module-level `_BUILD_ID`. Returns True on success.
     Only fires when /_next/data returns 404 (HC deployed new build).
@@ -313,22 +315,19 @@ def _refresh_build_id() -> bool:
             pass
 
         try:
-            from selenium_driverless import webdriver
+            from camoufox.async_api import AsyncCamoufox
         except ImportError:
             log.warning(
-                "hiring_cafe: selenium-driverless not installed — cannot refresh buildId"
+                "hiring_cafe: camoufox not installed — cannot refresh buildId"
             )
             return False
 
         async def _extract():
-            options = webdriver.ChromeOptions()
-            options.add_argument("--no-sandbox")
-            options.add_argument("--window-size=1280,900")
-            options.add_argument("--window-position=-2400,-2400")
-            async with webdriver.Chrome(options=options) as driver:
-                await driver.get(_BASE + "/", wait_load=True, timeout=30)
-                await asyncio.sleep(5)
-                html = await driver.page_source
+            async with AsyncCamoufox(headless=True, humanize=True) as browser:
+                page = await browser.new_page()
+                await page.goto(_BASE + "/", wait_until="load", timeout=45_000)
+                await page.wait_for_timeout(5_000)
+                html = await page.content()
                 m = re.search(r'"buildId"\s*:\s*"([^"]+)"', html)
                 return m.group(1) if m else None
 
@@ -339,7 +338,7 @@ def _refresh_build_id() -> bool:
                 return True
             return False
         except Exception as e:
-            log.warning(f"hiring_cafe: headed buildId-refresh failed: {e!r}")
+            log.warning(f"hiring_cafe: Camoufox buildId-refresh failed: {e!r}")
             return False
 
 
