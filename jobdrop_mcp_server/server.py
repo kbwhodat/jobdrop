@@ -78,6 +78,18 @@ _SITE_ALIASES = {
     "builtinla": "builtin",
     "builtinchicago": "builtin",
     "icims.com": "icims",
+    "snag": "snagajob",
+    "snag_a_job": "snagajob",
+    "snag-a-job": "snagajob",
+    "snagajob.com": "snagajob",
+    "dice.com": "dice",
+    "idealist.org": "idealist",
+    "career_builder": "careerbuilder",
+    "career-builder": "careerbuilder",
+    "careerbuilder.com": "careerbuilder",
+    "join_handshake": "handshake",
+    "joinhandshake": "handshake",
+    "joinhandshake.com": "handshake",
 }
 
 _REMOTE_LOCATION_ALIASES = {"remote", "anywhere", "wfh", "work from home", "us-remote", "remote-us"}
@@ -298,6 +310,7 @@ async def scrape_jobs_tool(
         "clearance_jobs", "kforce", "insight_global",
         "adzuna", "jooble", "findwork", "the_muse",
         "bayt", "naukri",
+        "snagajob", "dice", "idealist", "careerbuilder", "handshake",
     ],
     results_wanted: int = 15,
     job_type: Optional[str] = None,
@@ -315,7 +328,7 @@ async def scrape_jobs_tool(
     output_format: str = "markdown",
     concise: bool = False,
 ) -> str:
-    """Search 28 job boards in one call. By default hits ALL 28 sources
+    """Search 33 job boards in one call. By default hits ALL 33 sources
     in parallel and returns normalized results.
 
     Quick example:
@@ -329,7 +342,7 @@ async def scrape_jobs_tool(
     Args:
         search_term: Required. Job keywords, e.g. "site reliability engineer".
         location: City/state ("Atlanta, GA"), "Remote", or country.
-        site_name: Optional list of sources to query. Default: all 28.
+        site_name: Optional list of sources to query. Default: all 33.
         results_wanted: Number of jobs to return (default 15).
         job_type: "fulltime" | "parttime" | "internship" | "contract".
         is_remote: True to filter remote-only.
@@ -394,7 +407,7 @@ async def scrape_jobs_tool(
         site_name = [_SITE_ALIASES.get(s.lower().strip(), s) for s in site_name if isinstance(s, str)]
 
         # Validate site names
-        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "ashby", "workday", "lever", "collab_work", "wellfound", "hiring_cafe", "trueup", "remoteok", "weworkremotely", "governmentjobs", "builtin", "icims"]
+        valid_sites = ["linkedin", "indeed", "glassdoor", "zip_recruiter", "google", "bayt", "naukri", "usajobs", "adzuna", "jooble", "findwork", "the_muse", "insight_global", "clearance_jobs", "kforce", "greenhouse", "ashby", "workday", "lever", "collab_work", "wellfound", "hiring_cafe", "trueup", "remoteok", "weworkremotely", "governmentjobs", "builtin", "icims", "snagajob", "dice", "idealist", "careerbuilder", "handshake"]
         invalid_sites = [site for site in site_name if site not in valid_sites]
         if invalid_sites:
             # Fuzzy-match suggestions help the model recover on retry instead
@@ -658,9 +671,15 @@ def get_supported_sites() -> str:
             # Regional
             "bayt": "Bayt — Middle East focused job portal.",
             "naukri": "Naukri — India's leading job portal. Includes skills, experience_range, company_rating.",
+            # Hourly / nonprofit / tech / general / student additions
+            "snagajob": "Snagajob — dominant US hourly / part-time / shift-work board. Best source for retail, food, warehouse, caregiving, no-degree roles. Clean public JSON API.",
+            "dice": "Dice — US tech / IT specialty board. SSR'd HTML scrape via Googlebot UA. Strong contract and W2 tech listings.",
+            "idealist": "Idealist — largest US nonprofit / NGO / mission-driven job board. Sitemap-driven, clean JSON-LD on every detail page.",
+            "careerbuilder": "CareerBuilder — broad US/CA general-purpose board. SSR'd HTML with inline jobResults JSON (50 jobs/page). Bypasses Cloudflare WAF via safari17_2_ios TLS fingerprint.",
+            "handshake": "Handshake — early-talent / student / new-grad jobs (public listings only). City-page HTML + JSON-LD detail. Most postings are auth-walled to verified students; this scraper covers the public surface.",
         }
 
-        response = "## 🔗 Supported Job Board Sites (28 total)\n\n"
+        response = "## 🔗 Supported Job Board Sites (33 total)\n\n"
         for site, description in sites_info.items():
             response += f"- **`{site}`**: {description}\n"
 
@@ -670,6 +689,10 @@ def get_supported_sites() -> str:
         response += "- **Government/cleared**: `[\"usajobs\", \"clearance_jobs\"]`.\n"
         response += "- **Specific company**: `[\"greenhouse\"]` with the company name in `search_term`.\n"
         response += "- **Fastest single-source**: `[\"collab_work\"]` (~280ms/call).\n"
+        response += "- **Hourly / part-time / no-degree**: `[\"snagajob\", \"indeed\"]` — Snagajob dominates retail, food, warehouse, caregiving.\n"
+        response += "- **Nonprofit / mission-driven**: `[\"idealist\"]` — unique coverage outside the mainstream aggregators.\n"
+        response += "- **Tech (W2 + contract)**: `[\"dice\", \"hiring_cafe\"]`.\n"
+        response += "- **Student / new-grad public surface**: `[\"handshake\"]`.\n"
         response += "- **Regional**: include `bayt` (Middle East), `naukri` (India) as needed.\n"
         response += "- **Rate limiting**: LinkedIn most restrictive; Indeed most reliable; collab_work fastest.\n"
 
@@ -702,11 +725,15 @@ def get_job_search_tips() -> str:
 - **State/Country**: "California", "Texas", "United Kingdom"
 - **Multiple locations**: Run separate searches for different cities
 
-### 🏢 **Site Selection Guide** (28 sites total — see `get_supported_sites`)
+### 🏢 **Site Selection Guide** (33 sites total — see `get_supported_sites`)
 - **Start small**: 2-3 sites is plenty for a good query
 - **Best general-purpose**: `hiring_cafe` (~140 AI-tagged jobs/page) + `indeed` (broadest mainstream)
 - **Startup roles**: `wellfound` + `hiring_cafe`
 - **Federal / cleared**: `usajobs` + `clearance_jobs`
+- **Hourly / part-time / no-degree**: `snagajob` — dominant for retail, food, warehouse, caregiving
+- **Nonprofit / mission-driven**: `idealist` — coverage missing from mainstream
+- **Tech (W2 + contract)**: `dice` + `hiring_cafe`
+- **Student / new-grad**: `handshake` (public surface only)
 - **Specific company**: `greenhouse` with company name in `search_term`
 - **Fastest single-source**: `collab_work` (~280ms/call)
 - **Regional**: `bayt` (Middle East), `naukri` (India)

@@ -1,6 +1,6 @@
 # jobdrop
 
-A multi-source job scraper. Hits 28 job boards in one call, normalizes
+A multi-source job scraper. Hits 33 job boards in one call, normalizes
 the results into a pandas DataFrame, and ships with anti-bot handling
 for the boards that block standard scrapers.
 
@@ -8,7 +8,7 @@ for the boards that block standard scrapers.
 
 ## What's in here
 
-### 28 sources
+### 33 sources
 
 | `site_name` | Source | Notes |
 |---|---|---|
@@ -40,6 +40,11 @@ for the boards that block standard scrapers.
 | `insight_global` | Insight Global staffing | Server-rendered listings |
 | `clearance_jobs` | ClearanceJobs (DHI) | Security-cleared roles, full JD + salary + structured job_type |
 | `kforce` | Kforce staffing | Direct backend API for fast results |
+| `snagajob` | Snagajob | Dominant US hourly / part-time / shift-work board. Retail, food, warehouse, caregiving. Clean public JSON API |
+| `dice` | Dice (DHI) | US tech / IT specialty board. SSR'd HTML scrape via Googlebot UA |
+| `idealist` | Idealist | Largest US nonprofit / NGO / mission-driven job board. Sitemap-driven + JSON-LD on every detail page |
+| `careerbuilder` | CareerBuilder | Broad US/CA general-purpose board. SSR'd HTML with inline `jobResults` JSON (50 jobs/page). Bypasses Cloudflare WAF via Safari iOS TLS fingerprint |
+| `handshake` | Handshake | Early-talent / student / new-grad. Public city-page surface + JSON-LD detail. Most postings auth-walled to verified students; this covers the public slice |
 
 ## Installation
 

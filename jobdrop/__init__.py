@@ -20,6 +20,11 @@ _SOURCE_PRIORITY = {
     "linkedin": 1, "indeed": 1, "glassdoor": 1, "google": 1,
     "ziprecruiter": 1, "wellfound": 1, "naukri": 1, "bayt": 1,
     "usajobs": 1, "governmentjobs": 1,
+    # Hourly/nonprofit/tech/student additions — direct-employer or
+    # specialty boards, treat as board-tier (priority 1) so they win
+    # over generic aggregators.
+    "snagajob": 1, "dice": 1, "idealist": 1, "handshake": 1,
+    "careerbuilder": 1,
     "remoteok": 2, "weworkremotely": 2,
     "adzuna": 2, "jooble": 2, "findwork": 2, "the_muse": 2,
     "insight_global": 2, "clearance_jobs": 2, "kforce": 2,
@@ -71,15 +76,19 @@ from jobdrop.adzuna import Adzuna
 from jobdrop.ashby import Ashby
 from jobdrop.bayt import BaytScraper
 from jobdrop.builtin import BuiltIn
+from jobdrop.careerbuilder import CareerBuilder
 from jobdrop.clearancejobs import ClearanceJobs
 from jobdrop.collabwork import CollabWork
+from jobdrop.dice import Dice
 from jobdrop.findwork import Findwork
 from jobdrop.glassdoor import Glassdoor
 from jobdrop.google import Google
 from jobdrop.governmentjobs import GovernmentJobs
 from jobdrop.greenhouse import Greenhouse
+from jobdrop.handshake import Handshake
 from jobdrop.hiring_cafe import HiringCafe
 from jobdrop.icims import ICIMS
+from jobdrop.idealist import Idealist
 from jobdrop.indeed import Indeed
 from jobdrop.insightglobal import InsightGlobal
 from jobdrop.jooble import Jooble
@@ -88,6 +97,7 @@ from jobdrop.lever import Lever
 from jobdrop.linkedin import LinkedIn
 from jobdrop.naukri import Naukri
 from jobdrop.remoteok import RemoteOK
+from jobdrop.snagajob import Snagajob
 from jobdrop.the_muse import TheMuse
 from jobdrop.trueup import TrueUp
 from jobdrop.usajobs import USAJobs
@@ -167,6 +177,12 @@ def scrape_jobs(
         Site.GOVERNMENTJOBS: GovernmentJobs,
         Site.BUILTIN: BuiltIn,
         Site.ICIMS: ICIMS,
+        # Hourly / nonprofit / tech / general / student additions
+        Site.SNAGAJOB: Snagajob,
+        Site.DICE: Dice,
+        Site.IDEALIST: Idealist,
+        Site.CAREERBUILDER: CareerBuilder,
+        Site.HANDSHAKE: Handshake,
     }
     set_logger_level(verbose)
     job_type = get_enum_from_value(job_type) if job_type else None

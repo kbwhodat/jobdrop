@@ -4,12 +4,12 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "jobdrop"
-version = "2.9.2"
-description = "28-source job scraper library + MCP server. LinkedIn, Indeed, Glassdoor, Google, ZipRecruiter, Wellfound, Hiring Cafe, TrueUp, Greenhouse, Ashby, Workday, Lever, iCIMS, Built In, RemoteOK, WeWorkRemotely, USAJobs, GovernmentJobs, Adzuna, Jooble, Findwork, The Muse, Insight Global, Clearance Jobs, Kforce, CollabWork, Naukri, Bayt."
+version = "2.10.0"
+description = "33-source job scraper library + MCP server. LinkedIn, Indeed, Glassdoor, Google, ZipRecruiter, Wellfound, Hiring Cafe, TrueUp, Greenhouse, Ashby, Workday, Lever, iCIMS, Built In, RemoteOK, WeWorkRemotely, USAJobs, GovernmentJobs, Adzuna, Jooble, Findwork, The Muse, Insight Global, Clearance Jobs, Kforce, CollabWork, Naukri, Bayt, Snagajob, Dice, Idealist, CareerBuilder, Handshake."
 authors = ["kbwhodat <katobyan@gmail.com>"]
 homepage = "https://github.com/kbwhodat/jobdrop"
 readme = "README.md"
-keywords = [ "jobs-scraper", "mcp", "linkedin", "indeed", "glassdoor", "ziprecruiter", "wellfound", "hiring-cafe", "greenhouse", "usajobs"]
+keywords = [ "jobs-scraper", "mcp", "linkedin", "indeed", "glassdoor", "ziprecruiter", "wellfound", "hiring-cafe", "greenhouse", "usajobs", "snagajob", "dice", "idealist", "careerbuilder", "handshake"]
 [[tool.poetry.packages]]
 include = "jobdrop"
 [[tool.poetry.packages]]

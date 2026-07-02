@@ -314,6 +314,12 @@ class Site(Enum):
     GOVERNMENTJOBS = "governmentjobs"
     BUILTIN = "builtin"
     ICIMS = "icims"
+    # Hourly / nonprofit / tech / general / student additions
+    SNAGAJOB = "snagajob"
+    DICE = "dice"
+    IDEALIST = "idealist"
+    CAREERBUILDER = "careerbuilder"
+    HANDSHAKE = "handshake"
 
 
 class SalarySource(Enum):
